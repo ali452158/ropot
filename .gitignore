@@ -61,14 +61,15 @@ prompt
 # === ALFA-specific ===
 /skills/
 /examples/
-/mini-services/node_modules/
-/mini-services/*/node_modules/
-/mini-services/*/bun.lock
-/mini-services/*/.next/
+/mini-services/
+/tests/
+/.zscripts/
 /upload/
 /tool-results/
 /agent-ctx/
+/download/
 /worklog.md
+/dev.pid
 
 # === Keep these (do NOT ignore) ===
 !.env.example
