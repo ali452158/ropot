@@ -1,0 +1,30 @@
+# ============================================================
+# Traefik dynamic config (middlewares, etc.)
+# Save to: /etc/traefik/dynamic.yml on the VPS
+# ============================================================
+
+http:
+  middlewares:
+    https-redirect:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    secure-headers:
+      headers:
+        sslRedirect: true
+        sslForceHost: true
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        frameDeny: false
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
