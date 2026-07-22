@@ -1,0 +1,111 @@
+// ALFA Reports - Automated Trading Bot Database Schema
+// Generator and datasource
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Activation codes - one per device, valid for 30 days
+model ActivationCode {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  status          String   @default("UNUSED") // UNUSED, ACTIVE, EXPIRED, REVOKED
+  deviceFingerprint String? // null until first activation
+  deviceInfo      String?  // user-agent / IP metadata
+  activatedAt     DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdBy       String   @default("telegram-bot") // telegram-bot | admin
+  notes           String?
+
+  mt5Sessions     MT5Session[]
+  trades          Trade[]
+
+  @@index([code])
+  @@index([status])
+}
+
+// MT5 session - created after successful activation + MT5 login
+model MT5Session {
+  id              String   @id @default(cuid())
+  sessionId       String   @unique // internal session token
+  activationCodeId String
+  mt5Login        String   // MT5 account ID (e.g., "12345678")
+  mt5Server       String   // e.g., "ICMarketsSC-Demo"
+  mt5PasswordHash String   // we never store plain password; hash via MetaAPI proxy account
+  metaApiAccountId String? // MetaAPI account ID created/provisioned for this MT5 login
+  deviceId        String
+  status          String   @default("ACTIVE") // ACTIVE, CLOSED, EXPIRED
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  activationCode  ActivationCode @relation(fields: [activationCodeId], references: [id])
+  botConfig       BotConfig?
+  trades          Trade[]
+
+  @@index([sessionId])
+  @@index([activationCodeId])
+}
+
+// Bot configuration per session
+model BotConfig {
+  id              String   @id @default(cuid())
+  sessionId       String   @unique
+  symbol          String   @default("XAUUSD") // Gold
+  timeframe       String   @default("M1")
+  lotSize         Float    @default(0.01)
+  tpPips          Float    @default(10)
+  slPips          Float    @default(7)
+  autoTpSl        Boolean  @default(true)
+  timeExitMinutes Int      @default(2)
+  minWickRatio    Float    @default(0.5)
+  maxSpreadPips   Float    @default(3.0)
+  botRunning      Boolean  @default(false)
+  botStartedAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  session         MT5Session @relation(fields: [sessionId], references: [id])
+}
+
+// Trade records
+model Trade {
+  id              String   @id @default(cuid())
+  activationCodeId String?
+  sessionId       String?
+  symbol          String
+  direction       String   // BUY | SELL
+  lotSize         Float
+  entryPrice      Float
+  exitPrice       Float?
+  tpPips          Float
+  slPips          Float
+  tpPrice         Float?
+  slPrice         Float?
+  wickPrice       Float?   // the rejection wick price that triggered entry
+  profitPips      Float?
+  profitUsd       Float?
+  status          String   @default("OPEN") // OPEN, CLOSED_TP, CLOSED_SL, CLOSED_TIME, CLOSED_MANUAL, ERROR
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  durationSeconds Int?
+  errorMessage    String?
+
+  activationCode  ActivationCode? @relation(fields: [activationCodeId], references: [id])
+  session         MT5Session?     @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([activationCodeId])
+  @@index([status])
+}
+
+// System settings (MetaAPI token, etc.) - stored encrypted at rest conceptually
+model SystemSetting {
+  id    String @id
+  value String
+}

@@ -1,0 +1,13 @@
+{
+  "name": "alfa-reports-metaapi-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
