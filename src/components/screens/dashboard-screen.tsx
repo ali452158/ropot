@@ -101,9 +101,13 @@ export function DashboardScreen() {
         if (data.botRunning !== botConfig.botRunning) {
           setBotConfig({ botRunning: data.botRunning });
         }
+        if (typeof data.highFrequencyMode === "boolean" &&
+            data.highFrequencyMode !== botConfig.highFrequencyMode) {
+          setBotConfig({ highFrequencyMode: data.highFrequencyMode });
+        }
       }
     } catch {}
-  }, [mt5.sessionId, botConfig.botRunning, setBotConfig]);
+  }, [mt5.sessionId, botConfig.botRunning, botConfig.highFrequencyMode, setBotConfig]);
 
   // Refresh market price + candles
   const refreshMarket = useCallback(async () => {
@@ -386,6 +390,25 @@ export function DashboardScreen() {
                 <Switch
                   checked={botConfig.autoTpSl}
                   onCheckedChange={(v) => updateConfig({ autoTpSl: v })}
+                  disabled={botConfig.botRunning}
+                />
+              </div>
+
+              {/* High-Frequency mode toggle — trade every M1 candle close */}
+              <div className="flex items-center justify-between py-2 rounded-lg bg-fuchsia-500/5 border border-fuchsia-500/20 px-3">
+                <div>
+                  <Label className="text-xs text-fuchsia-200/90 flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-fuchsia-300" />
+                    نمط التردد العالي (كل شمعة)
+                  </Label>
+                  <span className="text-[10px] text-fuchsia-300/60 block leading-tight mt-0.5">
+                    يفتح صفقة عند كل إغلاق شمعة M1 — تداول سريع التردد.
+                    الاتجاه يحدده Wick (أو الزخم افتراضياً).
+                  </span>
+                </div>
+                <Switch
+                  checked={botConfig.highFrequencyMode}
+                  onCheckedChange={(v) => updateConfig({ highFrequencyMode: v })}
                   disabled={botConfig.botRunning}
                 />
               </div>

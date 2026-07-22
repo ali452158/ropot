@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
       running: isBotRunning(sessionToken),
       botRunning: cfg?.botRunning || false,
       botStartedAt: cfg?.botStartedAt?.toISOString() || null,
+      highFrequencyMode: cfg?.highFrequencyMode || false,
       trades,
       stats: {
         total: trades.length,

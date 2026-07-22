@@ -31,6 +31,8 @@ export type BotConfigState = {
   timeExitMinutes: number;
   minWickRatio: number;
   maxSpreadPips: number;
+  /** High-frequency mode: trade on every closed M1 candle (no waiting for wick revisit). */
+  highFrequencyMode: boolean;
   botRunning: boolean;
   botStartedAt: string | null;
 };
@@ -108,6 +110,7 @@ const defaultBotConfig: BotConfigState = {
   timeExitMinutes: 2,
   minWickRatio: 0.5,
   maxSpreadPips: 3.0,
+  highFrequencyMode: false,
   botRunning: false,
   botStartedAt: null,
 };
