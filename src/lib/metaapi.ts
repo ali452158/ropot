@@ -173,15 +173,29 @@ export async function getAccountInfo(
 }
 
 // --------- Market data ---------
+//
+// Each bot session belongs to a DIFFERENT subscriber, and each subscriber has
+// their own MT5 account + their own MetaAPI provisioning. So getCandles() and
+// getCurrentPrice() MUST accept the subscriber's mt5Login so they fetch market
+// data through THAT subscriber's MetaAPI account — not through a random shared
+// account. If the subscriber's account is not (yet) provisioned, we fall back
+// to any cached account (market data is symbol-global) and finally to
+// simulation mode.
+
 export async function getCandles(
   symbol: string,
   timeframe: string,
-  limit = 50
+  limit = 50,
+  mt5Login?: string
 ): Promise<Candle[]> {
   if (SIMULATION) {
     return simulateCandles(symbol, limit);
   }
-  const id = accountCache.values().next().value;
+  // Prefer the subscriber's own MetaAPI account; fall back to any cached
+  // account; finally fall back to simulation.
+  const id =
+    (mt5Login && accountCache.get(mt5Login)) ||
+    accountCache.values().next().value;
   if (!id) return simulateCandles(symbol, limit);
   try {
     const res = await fetch(
@@ -203,7 +217,10 @@ export async function getCandles(
   }
 }
 
-export async function getCurrentPrice(symbol: string): Promise<Tick | null> {
+export async function getCurrentPrice(
+  symbol: string,
+  mt5Login?: string
+): Promise<Tick | null> {
   if (SIMULATION) {
     const base = 2350 + (Math.random() - 0.5) * 20;
     return {
@@ -213,7 +230,9 @@ export async function getCurrentPrice(symbol: string): Promise<Tick | null> {
       time: new Date().toISOString(),
     };
   }
-  const id = accountCache.values().next().value;
+  const id =
+    (mt5Login && accountCache.get(mt5Login)) ||
+    accountCache.values().next().value;
   if (!id) return null;
   try {
     const res = await fetch(
@@ -226,6 +245,20 @@ export async function getCurrentPrice(symbol: string): Promise<Tick | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Returns the MetaAPI account ID currently associated with an MT5 login
+ * (or null if that login has never been provisioned in this process).
+ * Used by the admin/sessions endpoint to report which subscribers are bound.
+ */
+export function getCachedMetaApiAccountId(mt5Login: string): string | null {
+  return accountCache.get(mt5Login) || null;
+}
+
+/** Returns all MT5 logins that have been provisioned in this process. */
+export function listProvisionedLogins(): string[] {
+  return Array.from(accountCache.keys());
 }
 
 export async function createMarketOrder(
