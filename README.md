@@ -2,6 +2,12 @@
 
 بوت تداول آلي للذهب (XAUUSD) باستراتيجية Wick-to-Wick Rejection على فريم M1.
 
+> **ملاحظة حول بنية المشروع:**
+> هذا المشروع يستخدم Next.js 16 App Router مع `src/app/` (وليس `app/` في الجذر).
+> مجلدات `app/` و `pages/` الموجودة في الجذر هي مجرد markers لإرضاء فحص بنية Hostinger
+> ولا تؤثر على سلوك Next.js (Next 16 يفضّل `src/app/` تلقائيًا عند وجوده).
+> التطبيق الفعلي في: **`src/app/`**.
+
 ## المميزات
 - بوت تداول آلي متصل بـ MT5 عبر MetaAPI Cloud
 - استراتيجية Wick-to-Wick Rejection + نمط التردد العالي (HF)
@@ -21,25 +27,38 @@
 - undici (HTTP client with custom TLS for MetaAPI)
 - z-ai-web-dev-sdk (image generation)
 
-## التركيب
+## النشر على Hostinger VPS (Docker)
+
+```bash
+# على Hostinger VPS (Web Terminal أو SSH):
+git clone https://github.com/ali452158/ropot.git
+cd ropot
+cp .env.example .env
+nano .env  # املأ META_API_TOKEN والإعدادات الأخرى
+docker compose up -d --build
+```
+
+التفاصيل الكاملة في [DEPLOY-HOSTINGER.md](./DEPLOY-HOSTINGER.md).
+
+## التركيب محليًا (للتطوير)
 
 ```bash
 # 1. تثبيت dependencies
-npm install
+bun install
 
 # 2. تهيئة قاعدة البيانات
-npx prisma db push
+bunx prisma db push
 
 # 3. إنشاء ملف .env من القالب
 cp .env.example .env
 # ثم عدّل القيم (META_API_TOKEN, TELEGRAM_BOT_TOKEN, ...)
 
 # 4. تشغيل في وضع التطوير
-npm run dev
+bun run dev
 
 # 5. بناء وتشغيل الإنتاج
-npm run build
-npm start
+bun run build
+bun run start
 ```
 
 ## متغيرات البيئة (.env)
@@ -54,26 +73,6 @@ npm start
 | `ADMIN_TELEGRAM_ID` | معرف الأدمن في تلجرام |
 | `ADMIN_API_TOKEN` | سر مشترك بين الموقع وبوت تلجرام |
 | `ALFA_APP_BASE_URL` | عنوان URL للموقع |
-
-## الرفع على GitHub (طريقة سريعة)
-
-بدلاً من Web Upload (محدود بـ 100 ملف)، استخدم git CLI:
-
-```bash
-# 1. أنشئ repo جديد على GitHub بدون README/license/gitignore
-
-# 2. في مجلد المشروع محلياً:
-git init
-git add .
-git commit -m "Initial commit: ALFA Reports trading bot"
-
-# 3. اربط بـ repo البعيد (استبدل الرابط برابط repo الخاص بك):
-git remote add origin https://github.com/USERNAME/alfa-reports.git
-
-# 4. ادفع الكود:
-git branch -M main
-git push -u origin main
-```
 
 ## الترخيص
 خاص — غير قابل للتوزيع بدون إذن من المالك.
