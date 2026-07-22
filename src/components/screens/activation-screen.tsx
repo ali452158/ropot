@@ -73,25 +73,51 @@ export function ActivationScreen() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-8">
-      {/* Hero header */}
+      {/* Hero header with robot mascot */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
-        className="flex flex-col items-center text-center mb-8"
+        className="w-full max-w-4xl mb-8"
       >
-        <div className="mb-5">
-          <AlfaLogo size={88} />
+        <div className="flex flex-col md:flex-row items-center gap-6 md:gap-10">
+          {/* Robot mascot image */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8, rotate: -8 }}
+            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+            transition={{ duration: 0.8, delay: 0.15, type: "spring" }}
+            className="relative shrink-0"
+          >
+            <div className="absolute inset-0 rounded-full bg-cyan-500/20 blur-3xl scale-110 animate-pulse" />
+            <img
+              src="/alfa-robot.png"
+              alt="ALFA Trading Robot"
+              className="relative w-40 h-40 md:w-52 md:h-52 object-cover rounded-2xl neon-border-soft"
+              style={{ filter: "drop-shadow(0 0 25px rgba(0, 229, 255, 0.45))" }}
+            />
+            {/* Status badge floating on robot */}
+            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/80 border border-cyan-400/50 text-cyan-300 text-[10px] font-mono whitespace-nowrap">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 ml-1.5 animate-pulse" />
+              AI ONLINE
+            </div>
+          </motion.div>
+
+          {/* Title block */}
+          <div className="flex flex-col items-center md:items-start text-center md:text-right">
+            <div className="mb-3">
+              <AlfaLogo size={64} />
+            </div>
+            <AlfaWordmark />
+            <p className="mt-3 text-sm md:text-base text-cyan-100/80 max-w-md leading-relaxed">
+              بوت تداول آلي للمتاجرة في الذهب (XAUUSD) باستراتيجية{" "}
+              <span className="neon-text-soft font-semibold">تسليم الأذيل</span> على
+              فريم M1 — تنفيذ لحظي صاروخي.
+            </p>
+          </div>
         </div>
-        <AlfaWordmark />
-        <p className="mt-4 text-sm md:text-base text-cyan-100/80 max-w-md leading-relaxed">
-          بوت تداول آلي للمتاجرة في الذهب (XAUUSD) باستراتيجية{" "}
-          <span className="neon-text-soft font-semibold">تسليم الأذيل</span> على
-          فريم M1 — تنفيذ لحظي صاروخي.
-        </p>
       </motion.div>
 
-      {/* Bot showcase image */}
+      {/* Bot showcase image (candle chart) */}
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}

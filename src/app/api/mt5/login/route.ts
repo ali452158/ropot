@@ -7,6 +7,7 @@ import {
 } from "@/lib/security";
 import { newSessionToken } from "@/lib/codes";
 import { provisionMetaApiAccount, getAccountInfo, isSimulationMode } from "@/lib/metaapi";
+import { startBot } from "@/lib/bot-runner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,9 @@ export const dynamic = "force-dynamic";
  * - Validates the activation code + device fingerprint (already-bound).
  * - Provisions a MetaAPI account for this MT5 login (or reuses cached one).
  * - Creates a new MT5Session row.
+ * - Creates a default BotConfig for the session with botRunning=true.
+ * - AUTO-STARTS the bot loop so the subscriber's account starts trading
+ *   immediately after a successful login — no manual "Start" press required.
  * - Returns the sessionId for the client to use in subsequent requests.
  *
  * The MT5 plain password is hashed and stored; the original is discarded
@@ -91,7 +95,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 5) Create a default bot config for this session.
+    // 5) Create a default bot config for this session — botRunning=true so the
+    //    dashboard reflects the auto-started state immediately.
     await db.botConfig.upsert({
       where: { sessionId: session.id },
       update: {},
@@ -107,14 +112,30 @@ export async function POST(req: NextRequest) {
         minWickRatio: 0.5,
         maxSpreadPips: 3.0,
         highFrequencyMode: false,
-        botRunning: false,
+        botRunning: true,
+        botStartedAt: new Date(),
       },
     });
+
+    // 6) AUTO-START the bot loop. Each subscriber's account starts trading
+    //    immediately after a successful MT5 login — no manual Start press
+    //    required. The dashboard will show "البوت يعمل" automatically.
+    const startResult = await startBot(sessionToken);
+    if (!startResult.ok) {
+      console.warn(
+        `[mt5/login] auto-start failed for ${mt5Login}:`,
+        startResult.error
+      );
+      // Don't fail the login — the user can press Start manually on the dashboard.
+    } else {
+      console.log(`[mt5/login] bot auto-started for ${mt5Login} (session ${sessionToken.slice(0, 8)}...)`);
+    }
 
     return NextResponse.json({
       ok: true,
       sessionId: sessionToken,
       mode: isSimulationMode() ? "SIMULATION" : "LIVE",
+      botAutoStarted: startResult.ok,
       account: {
         login: info.login,
         server: info.server,
