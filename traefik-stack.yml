@@ -1,0 +1,42 @@
+# ============================================================
+# Traefik proxy stack — deploys Traefik itself on the VPS
+# Run BEFORE deploying ALFA Reports:
+#   docker network create traefik-public 2>/dev/null || true
+#   docker compose -f traefik-stack.yml up -d
+# ============================================================
+
+services:
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Dashboard (restrict via firewall!)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /etc/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - traefik_acme:/etc/traefik
+      - traefik_logs:/var/log/traefik
+    networks:
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.scalper.com`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=https"
+      - "traefik.http.routers.traefik-dashboard.tls=true"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=admin:$$apr1$$5XqVpmSJ$$z3mF0WvKQHm8m3yFwE3Eu1"
+      # Default password is "admin" — CHANGE IT (see instructions in DEPLOY-HOSTINGER.md)
+
+volumes:
+  traefik_acme:
+  traefik_logs:
+
+networks:
+  traefik-public:
+    external: true

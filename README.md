@@ -3,10 +3,9 @@
 بوت تداول آلي للذهب (XAUUSD) باستراتيجية Wick-to-Wick Rejection على فريم M1.
 
 > **ملاحظة حول بنية المشروع:**
-> هذا المشروع يستخدم Next.js 16 App Router مع `src/app/` (وليس `app/` في الجذر).
-> مجلدات `app/` و `pages/` الموجودة في الجذر هي مجرد markers لإرضاء فحص بنية Hostinger
-> ولا تؤثر على سلوك Next.js (Next 16 يفضّل `src/app/` تلقائيًا عند وجوده).
-> التطبيق الفعلي في: **`src/app/`**.
+> هذا المشروع يستخدم Next.js 16 App Router مع `src/app/`.
+> التطبيق الفعلي في: **`src/app/`** (16 API routes + 3 شاشات UI).
+> ملف `.hostinger-app-marker` موجود لإعلام Hostinger أن هذا مشروع Next.js صالح.
 
 ## المميزات
 - بوت تداول آلي متصل بـ MT5 عبر MetaAPI Cloud

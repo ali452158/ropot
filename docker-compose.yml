@@ -1,9 +1,11 @@
 # ============================================================
-# ALFA Reports — docker-compose.yml (Hostinger VPS ready)
-# Usage:
-#   1. Copy .env.example -> .env and fill in real values
-#   2. docker compose up -d --build
-#   3. App will be available on http://YOUR_VPS_IP:3000
+# ALFA Reports — docker-compose.yml (Hostinger VPS + Traefik)
+# Domain: bot.scalper.com (HTTPS via Traefik Let's Encrypt)
+# ============================================================
+# Prerequisite on the VPS:
+#   1. Install Traefik proxy (running on ports 80/443)
+#   2. Make sure Traefik is on the `traefik-public` network
+#   3. DNS for bot.scalper.com → your VPS IP
 # ============================================================
 
 services:
@@ -13,8 +15,6 @@ services:
       dockerfile: Dockerfile
     container_name: alfa-reports
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     env_file:
       - .env
     environment:
@@ -25,21 +25,56 @@ services:
     volumes:
       # Persist SQLite DB across container restarts
       - alfa_db:/app/db
-      # Optional: mount .env at runtime so you can edit without rebuilding
+      # Mount .env at runtime so you can edit without rebuilding
       - ./.env:/app/.env:ro
     networks:
+      - traefik-public
       - alfa-net
+    labels:
+      # ====== Traefik routing for bot.scalper.com ======
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+
+      # HTTP entrypoint (port 80) — used for ACME challenge + redirect to HTTPS
+      - "traefik.http.routers.alfa-http.rule=Host(`bot.scalper.com`)"
+      - "traefik.http.routers.alfa-http.entrypoints=http"
+      - "traefik.http.routers.alfa-http.middlewares=https-redirect@file"
+
+      # HTTPS entrypoint (port 443) — main router
+      - "traefik.http.routers.alfa.rule=Host(`bot.scalper.com`)"
+      - "traefik.http.routers.alfa.entrypoints=https"
+      - "traefik.http.routers.alfa.tls=true"
+      - "traefik.http.routers.alfa.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.alfa.service=alfa-svc"
+
+      # Service: forward to container port 3000
+      - "traefik.http.services.alfa-svc.loadbalancer.server.port=3000"
+      - "traefik.http.services.alfa-svc.loadbalancer.server.scheme=http"
+
+      # Middleware: HSTS + compression
+      - "traefik.http.middlewares.alfa-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.alfa-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.alfa-headers.headers.forceSTSHeader=true"
+      - "traefik.http.routers.alfa.middlewares=alfa-headers@docker"
+
+      # Optional: also expose under localhost for direct debugging on port 3000
+      - "traefik.http.routers.alfa-local.rule=Host(`localhost`)"
+      - "traefik.http.routers.alfa-local.entrypoints=http"
+      - "traefik.http.routers.alfa-local.service=alfa-svc"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/system/mode"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
 
 volumes:
   alfa_db:
     driver: local
 
 networks:
+  # External network that Traefik listens on (must exist on the VPS)
+  traefik-public:
+    external: true
   alfa-net:
     driver: bridge

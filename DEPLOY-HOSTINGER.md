@@ -111,30 +111,80 @@ ufw allow 443/tcp
 ufw enable
 ```
 
-### الخطوة 8 (اختياري): تفعيل HTTPS عبر اسم النطاق
+### الخطوة 8 (موصى به): تفعيل HTTPS عبر Traefik + bot.scalper.com
 
-Hostinger VPS يأتي بـ Caddy أحيانًا. أو ثبّته يدويًا:
+سنستخدم Traefik بدلاً من Caddy لأن Hostinger Docker Manager يدمجه أحيانًا افتراضيًا، ولأن `docker-compose.yml` يحتوي على labels جاهزة لـ Traefik.
 
-```bash
-apt install caddy -y
-systemctl enable caddy
-```
+#### 1) سجّل DNS
 
-أنشئ `/etc/caddy/Caddyfile`:
+من مزود النطاق (`scalper.com`):
+- نوع: `A`
+- الاسم: `bot`
+- القيمة: `YOUR_VPS_IP`
+- TTL: 300
 
-```caddy
-alfa.yourdomain.com {
-    reverse_proxy localhost:3000
-}
-```
+انتظر 5–10 دقائق حتى ينتشر الـ DNS.
 
-ثم:
+#### 2) أنشئ شبكة Traefik + ثبّت Traefik نفسه
 
 ```bash
-systemctl restart caddy
+# Create external network used by both Traefik and ALFA containers
+docker network create traefik-public 2>/dev/null || true
+
+# Install Traefik config files
+mkdir -p /etc/traefik
+cp /opt/ropot/traefik.yml /etc/traefik/traefik.yml
+cp /opt/ropot/traefik-dynamic.yml /etc/traefik/dynamic.yml
+touch /etc/traefik/acme.json
+chmod 600 /etc/traefik/acme.json
+mkdir -p /var/log/traefik
+
+# Launch Traefik
+cd /opt/ropot
+docker compose -f traefik-stack.yml up -d
+
+# Verify Traefik is running
+docker compose -f traefik-stack.yml ps
+docker compose -f traefik-stack.yml logs --tail=20 traefik
 ```
 
-سيصدر Caddy شهادة Let's Encrypt تلقائيًا. الموقع متاح على `https://alfa.yourdomain.com`.
+#### 3) (مهم) غيّر كلمة مرور لوحة Traefik
+
+```bash
+# Generate a new basic-auth hash (replace YOUR_PASSWORD):
+htpasswd -nb admin YOUR_PASSWORD
+# Output: admin:$apr1$xyz$...
+
+# Replace the value in traefik-stack.yml line:
+#   traefik.http.middlewares.traefik-auth.basicauth.users=admin:$$apr1$$...
+# (Note: double the $ signs in YAML)
+# Then restart Traefik:
+docker compose -f traefik-stack.yml restart
+```
+
+#### 4) أعد تشغيل ALFA لتفعيل Traefik labels
+
+```bash
+cd /opt/ropot
+docker compose down
+docker compose up -d --build
+```
+
+#### 5) تحقق من استصدار شهادة HTTPS
+
+```bash
+# Watch Traefik logs — should show "Registering certificate" then "Certificate obtained"
+docker compose -f traefik-stack.yml logs -f traefik | grep -i cert
+```
+
+افتح المتصفح: **https://bot.scalper.com** — يجب أن يظهر موقع ALFA Reports بشهادة HTTPS صحيحة.
+
+#### 6) (اختياري) لوحة تحكم Traefik
+
+على DNS، أضف `traefik.scalper.com → YOUR_VPS_IP` ثم افتح:
+- `https://traefik.scalper.com` → لوحة Traefik
+- المستخدم: `admin`
+- كلمة المرور: التي عيّنتها في الخطوة 3
 
 ### أوامر الإدارة اليومية (Docker)
 
