@@ -19,6 +19,8 @@ import {
 } from "./metaapi";
 import {
   evaluateEntry,
+  evaluateHighFrequencyEntry,
+  pickNewClosedCandle,
   checkExit,
   calculateProfitPips,
   PIP_VALUE_XAUUSD,
@@ -31,6 +33,7 @@ type ActiveSession = {
   mt5Login: string;
   symbol: string;
   timeframe: string;
+  highFrequencyMode: boolean;
   interval: NodeJS.Timeout;
   currentPosition: {
     tradeId: string;
@@ -75,20 +78,27 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
     mt5Login: session.mt5Login,
     symbol: cfg.symbol,
     timeframe: cfg.timeframe,
+    highFrequencyMode: cfg.highFrequencyMode,
     interval: null as any,
     currentPosition: null,
   };
 
+  // In HF mode the bot must react as soon as a new M1 candle closes, so we
+  // poll more aggressively (500ms). In normal mode 1s is plenty.
+  const tickMs = cfg.highFrequencyMode ? 500 : 1000;
   ctx.interval = setInterval(async () => {
     try {
       await tickOnce(ctx);
     } catch (e) {
       console.error(`[bot:${sessionToken}] tick error:`, e);
     }
-  }, 1000);
+  }, tickMs);
 
   activeSessions.set(sessionToken, ctx);
-  console.log(`[bot:${sessionToken}] started (mode=${isSimulationMode() ? "SIM" : "LIVE"})`);
+  console.log(
+    `[bot:${sessionToken}] started (mode=${isSimulationMode() ? "SIM" : "LIVE"}, ` +
+    `hf=${cfg.highFrequencyMode ? "ON" : "OFF"}, tick=${tickMs}ms)`
+  );
   return { ok: true };
 }
 
@@ -142,11 +152,14 @@ async function tickOnce(ctx: ActiveSession) {
     await stopBot(ctx.sessionToken);
     return;
   }
+  // Sync runtime config changes:
   if (cfg.symbol !== ctx.symbol || cfg.timeframe !== ctx.timeframe) {
     ctx.symbol = cfg.symbol;
     ctx.timeframe = cfg.timeframe;
     ctx.currentPosition = null;
   }
+  // Reflect HF flag changes live (no need to restart bot).
+  ctx.highFrequencyMode = cfg.highFrequencyMode;
 
   const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 30);
   const price = await getCurrentPrice(cfg.symbol);
@@ -199,6 +212,44 @@ async function tickOnce(ctx: ActiveSession) {
   }
 
   // 2) Look for a new entry signal.
+  //    - HF mode  → fire on every freshly-closed M1 candle (no wick-tip revisit wait).
+  //    - Standard → original wick-rejection logic (waits for price to revisit wick tip).
+  if (cfg.highFrequencyMode) {
+    const closedCandle = pickNewClosedCandle(candles, cfg.lastHfCandleTime);
+    if (!closedCandle) return; // no new closed candle since last trade
+
+    const hfSignal = evaluateHighFrequencyEntry(closedCandle, price.bid, price.ask, {
+      minWickRatio: cfg.minWickRatio,
+      tpPips: cfg.tpPips,
+      slPips: cfg.slPips,
+      maxSpreadPips: cfg.maxSpreadPips,
+      pipValue: PIP_VALUE_XAUUSD,
+    });
+
+    // Persist lastHfCandleTime regardless of action so we don't re-evaluate
+    // the same closed candle on the next tick.
+    await db.botConfig.update({
+      where: { sessionId: ctx.internalId },
+      data: { lastHfCandleTime: closedCandle.time },
+    });
+
+    if (hfSignal.action === "HOLD") {
+      console.log(`[bot:${ctx.sessionToken}] HF skip: ${hfSignal.reason}`);
+      return;
+    }
+
+    await executeEntry(ctx, cfg, {
+      action: hfSignal.action,
+      reason: hfSignal.reason,
+      wickTip: hfSignal.wickTip,
+      entryPrice: hfSignal.entryPrice,
+      tpPrice: hfSignal.tpPrice,
+      slPrice: hfSignal.slPrice,
+    });
+    return;
+  }
+
+  // Standard wick-rejection entry.
   const signal = evaluateEntry(candles, price.bid, price.ask, {
     minWickRatio: cfg.minWickRatio,
     tpPips: cfg.tpPips,
@@ -208,8 +259,38 @@ async function tickOnce(ctx: ActiveSession) {
   });
 
   if (signal.action === "HOLD") return;
+  // After the HOLD check above, TS narrows signal.action to "BUY" | "SELL".
+  await executeEntry(
+    ctx,
+    cfg,
+    {
+      action: signal.action as "BUY" | "SELL",
+      reason: signal.reason,
+      wickTip: signal.wickTip,
+      entryPrice: signal.entryPrice,
+      tpPrice: signal.tpPrice,
+      slPrice: signal.slPrice,
+    }
+  );
+}
 
-  // 3) Execute the trade.
+/**
+ * Shared order-execution helper used by both standard and HF paths.
+ * Persists the Trade row, calls MetaAPI, and stashes the resulting
+ * position into ctx.currentPosition.
+ */
+async function executeEntry(
+  ctx: ActiveSession,
+  cfg: any,
+  signal: {
+    action: "BUY" | "SELL";
+    reason: string;
+    wickTip: number | null;
+    entryPrice: number | null;
+    tpPrice: number | null;
+    slPrice: number | null;
+  }
+) {
   const order = await createMarketOrder(
     ctx.mt5Login,
     cfg.symbol,
@@ -239,7 +320,6 @@ async function tickOnce(ctx: ActiveSession) {
     return;
   }
 
-  // 4) Record the trade.
   const trade = await db.trade.create({
     data: {
       sessionId: ctx.internalId,
@@ -268,7 +348,8 @@ async function tickOnce(ctx: ActiveSession) {
   };
 
   console.log(
-    `[bot:${ctx.sessionToken}] OPEN ${signal.action} ${cfg.symbol} @ ${signal.entryPrice} TP=${signal.tpPrice} SL=${signal.slPrice} wickTip=${signal.wickTip}`
+    `[bot:${ctx.sessionToken}] OPEN ${signal.action} ${cfg.symbol} @ ${signal.entryPrice} ` +
+    `TP=${signal.tpPrice} SL=${signal.slPrice} reason="${signal.reason}"`
   );
 }
 

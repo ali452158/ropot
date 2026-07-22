@@ -249,3 +249,173 @@ export function calculateProfitPips(
   const diff = direction === "BUY" ? exitPrice - entryPrice : entryPrice - exitPrice;
   return diff / pipValue;
 }
+
+/* ===========================================================================
+ *  HIGH-FREQUENCY MODE — "trade every M1 candle"
+ * ===========================================================================
+ *
+ * Operator option: when highFrequencyMode = true, the bot opens a trade at
+ * EVERY newly-closed M1 candle — it does NOT wait for price to revisit the
+ * wick tip. This produces a much higher trade cadence (one trade per minute
+ * on M1) at the cost of a slightly lower per-trade win rate.
+ *
+ * Direction logic per closed candle:
+ *   1. If a long lower wick is detected (>= minWickRatio) → BUY (buyers
+ *      rejected the low).
+ *   2. Else if a long upper wick is detected (>= minWickRatio) → SELL
+ *      (sellers rejected the high).
+ *   3. Else fall back to momentum: if close > open → BUY, else SELL.
+ *
+ * Risk management (TP/SL/time-exit) is identical to the standard mode and
+ * is still applied by checkExit() on every tick. The only thing HF mode
+ * changes is the *entry trigger*: it fires on candle close instead of
+ * waiting for a wick-tip revisit.
+ *
+ * The caller is responsible for ensuring evaluateHighFrequencyEntry is
+ * invoked at most ONCE per candle (track the last-traded candle time).
+ * ===========================================================================*/
+
+export type HighFrequencySignal = {
+  action: "BUY" | "SELL" | "HOLD";
+  reason: string;
+  wickTip: number | null;
+  candleTime: string | null;
+  entryPrice: number | null;
+  tpPrice: number | null;
+  slPrice: number | null;
+};
+
+/**
+ * Evaluate a high-frequency entry on a freshly-closed candle.
+ *
+ * @param lastClosedCandle  The most recent CLOSED candle (candles[len-2] from a typical feed).
+ * @param currentBid        Current bid tick.
+ * @param currentAsk        Current ask tick.
+ * @param config            Same config object used by evaluateEntry.
+ */
+export function evaluateHighFrequencyEntry(
+  lastClosedCandle: Candle,
+  currentBid: number,
+  currentAsk: number,
+  config: {
+    minWickRatio: number;
+    tpPips: number;
+    slPips: number;
+    maxSpreadPips: number;
+    pipValue: number;
+  }
+): HighFrequencySignal {
+  // Spread guard — never enter when spread is too wide (we'd start at a loss).
+  const spread = (currentAsk - currentBid) / config.pipValue;
+  if (spread > config.maxSpreadPips) {
+    return {
+      action: "HOLD",
+      reason: `Spread ${spread.toFixed(2)} pips > max ${config.maxSpreadPips} pips (HF)`,
+      wickTip: null,
+      candleTime: lastClosedCandle.time,
+      entryPrice: null,
+      tpPrice: null,
+      slPrice: null,
+    };
+  }
+
+  const signal = detectWick(lastClosedCandle, config.minWickRatio);
+  const range = lastClosedCandle.high - lastClosedCandle.low;
+
+  // Case 1 — long lower wick → BUY immediately (no waiting for revisit).
+  if (signal.type === "LOWER_WICK") {
+    const entry = currentAsk;
+    const slPrice = entry - config.slPips * config.pipValue;
+    const tpPrice = entry + config.tpPips * config.pipValue;
+    return {
+      action: "BUY",
+      reason: `HF: lower wick ${(signal.wickRatio * 100).toFixed(0)}% @ ${signal.wickTip.toFixed(2)} → BUY`,
+      wickTip: signal.wickTip,
+      candleTime: lastClosedCandle.time,
+      entryPrice: entry,
+      tpPrice,
+      slPrice,
+    };
+  }
+
+  // Case 2 — long upper wick → SELL immediately.
+  if (signal.type === "UPPER_WICK") {
+    const entry = currentBid;
+    const slPrice = entry + config.slPips * config.pipValue;
+    const tpPrice = entry - config.tpPips * config.pipValue;
+    return {
+      action: "SELL",
+      reason: `HF: upper wick ${(signal.wickRatio * 100).toFixed(0)}% @ ${signal.wickTip.toFixed(2)} → SELL`,
+      wickTip: signal.wickTip,
+      candleTime: lastClosedCandle.time,
+      entryPrice: entry,
+      tpPrice,
+      slPrice,
+    };
+  }
+
+  // Case 3 — no significant wick → momentum fallback (close vs open).
+  // Only fire if the candle has a non-trivial body (>= 1 pip); otherwise skip
+  // to avoid trading on a flat / doji candle.
+  const body = Math.abs(lastClosedCandle.close - lastClosedCandle.open);
+  if (range > 0 && body >= config.pipValue) {
+    const bullish = lastClosedCandle.close > lastClosedCandle.open;
+    if (bullish) {
+      const entry = currentAsk;
+      const slPrice = entry - config.slPips * config.pipValue;
+      const tpPrice = entry + config.tpPips * config.pipValue;
+      return {
+        action: "BUY",
+        reason: `HF: momentum BUY (close ${lastClosedCandle.close.toFixed(2)} > open ${lastClosedCandle.open.toFixed(2)})`,
+        wickTip: null,
+        candleTime: lastClosedCandle.time,
+        entryPrice: entry,
+        tpPrice,
+        slPrice,
+      };
+    } else {
+      const entry = currentBid;
+      const slPrice = entry + config.slPips * config.pipValue;
+      const tpPrice = entry - config.tpPips * config.pipValue;
+      return {
+        action: "SELL",
+        reason: `HF: momentum SELL (close ${lastClosedCandle.close.toFixed(2)} < open ${lastClosedCandle.open.toFixed(2)})`,
+        wickTip: null,
+        candleTime: lastClosedCandle.time,
+        entryPrice: entry,
+        tpPrice,
+        slPrice,
+      };
+    }
+  }
+
+  return {
+    action: "HOLD",
+    reason: `HF: doji candle (range ${range.toFixed(2)}, body ${body.toFixed(2)}) — skipped`,
+    wickTip: null,
+    candleTime: lastClosedCandle.time,
+    entryPrice: null,
+    tpPrice: null,
+    slPrice: null,
+  };
+}
+
+/**
+ * Detect whether the latest candle from the feed is a "new" closed candle
+ * that we have not traded on yet.
+ *
+ * @param candles          Full candle array (last item is the in-progress candle).
+ * @param lastTradedTime   ISO time string of the last candle we already acted on (or null).
+ * @returns The freshly-closed candle, or null if no new closed candle since lastTradedTime.
+ */
+export function pickNewClosedCandle(
+  candles: Candle[],
+  lastTradedTime: string | null
+): Candle | null {
+  if (candles.length < 2) return null;
+  // The closed candle is second-to-last; the last is the still-forming one.
+  const closed = candles[candles.length - 2];
+  if (!closed || !closed.time) return null;
+  if (lastTradedTime && closed.time <= lastTradedTime) return null;
+  return closed;
+}

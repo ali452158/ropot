@@ -33,6 +33,7 @@ export async function GET(req: NextRequest) {
         timeExitMinutes: 2,
         minWickRatio: 0.5,
         maxSpreadPips: 3.0,
+        highFrequencyMode: false,
         botRunning: false,
       },
     });
@@ -63,6 +64,7 @@ export async function POST(req: NextRequest) {
       "timeExitMinutes",
       "minWickRatio",
       "maxSpreadPips",
+      "highFrequencyMode",
     ] as const;
     for (const k of allowed) {
       if (k in body) {
@@ -85,6 +87,7 @@ export async function POST(req: NextRequest) {
         timeExitMinutes: patch.timeExitMinutes ?? 2,
         minWickRatio: patch.minWickRatio ?? 0.5,
         maxSpreadPips: patch.maxSpreadPips ?? 3.0,
+        highFrequencyMode: patch.highFrequencyMode ?? false,
         botRunning: false,
       },
     });

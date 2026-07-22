@@ -106,6 +106,7 @@ export async function POST(req: NextRequest) {
         timeExitMinutes: 2,
         minWickRatio: 0.5,
         maxSpreadPips: 3.0,
+        highFrequencyMode: false,
         botRunning: false,
       },
     });

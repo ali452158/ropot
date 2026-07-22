@@ -1,0 +1,854 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState, useCallback } from "react";
+     4→import { motion, AnimatePresence } from "framer-motion";
+     5→import { useAppStore, type Trade } from "@/lib/store";
+     6→import { AlfaLogo, AlfaWordmark } from "@/components/alfa-logo";
+     7→import { Button } from "@/components/ui/button";
+     8→import { Input } from "@/components/ui/input";
+     9→import { Label } from "@/components/ui/label";
+    10→import { Card, CardContent } from "@/components/ui/card";
+    11→import { Badge } from "@/components/ui/badge";
+    12→import { Switch } from "@/components/ui/switch";
+    13→import { Separator } from "@/components/ui/separator";
+    14→import { useToast } from "@/hooks/use-toast";
+    15→import {
+    16→  Select,
+    17→  SelectContent,
+    18→  SelectItem,
+    19→  SelectTrigger,
+    20→  SelectValue,
+    21→} from "@/components/ui/select";
+    22→import {
+    23→  Play,
+    24→  Square,
+    25→  TrendingUp,
+    26→  TrendingDown,
+    27→  Activity,
+    28→  Wallet,
+    29→  Gauge,
+    30→  Timer,
+    31→  Target,
+    32→  ShieldAlert,
+    33→  LogOut,
+    34→  RefreshCw,
+    35→  Zap,
+    36→  Cpu,
+    37→  Wifi,
+    38→  CheckCircle2,
+    39→  XCircle,
+    40→  Clock,
+    41→  CandlestickChart,
+    42→} from "lucide-react";
+    43→
+    44→const FOREX_SYMBOLS = [
+    45→  { value: "XAUUSD", label: "XAUUSD — الذهب" },
+    46→  { value: "EURUSD", label: "EURUSD — اليورو/دولار" },
+    47→  { value: "GBPUSD", label: "GBPUSD — الجنيه/دولار" },
+    48→  { value: "USDJPY", label: "USDJPY — الدولار/ين" },
+    49→  { value: "AUDUSD", label: "AUDUSD — الدولار الأسترالي" },
+    50→  { value: "USDCAD", label: "USDCAD — الدولار الكندي" },
+    51→  { value: "NZDUSD", label: "NZDUSD — الدولار النيوزيلندي" },
+    52→  { value: "USDCHF", label: "USDCHF — الدولار الفرنك" },
+    53→  { value: "EURJPY", label: "EURJPY — اليورو/ين" },
+    54→  { value: "GBPJPY", label: "GBPJPY — الجنيه/ين" },
+    55→  { value: "XAGUSD", label: "XAGUSD — الفضة" },
+    56→  { value: "EURGBP", label: "EURGBP — اليورو/جنيه" },
+    57→  { value: "EURAUD", label: "EURAUD — اليورو/أسترالي" },
+    58→  { value: "AUDJPY", label: "AUDJPY — الأسترالي/ين" },
+    59→];
+    60→
+    61→const TIMEFRAMES = [
+    62→  { value: "M1", label: "M1 — دقيقة (موصى به)" },
+    63→  { value: "M5", label: "M5 — 5 دقائق" },
+    64→  { value: "M15", label: "M15 — ربع ساعة" },
+    65→  { value: "M30", label: "M30 — نصف ساعة" },
+    66→  { value: "H1", label: "H1 — ساعة" },
+    67→];
+    68→
+    69→export function DashboardScreen() {
+    70→  const { activation, mt5, botConfig, setBotConfig, reset, setMT5 } = useAppStore();
+    71→  const { toast } = useToast();
+    72→  const [trades, setTrades] = useState<Trade[]>([]);
+    73→  const [stats, setStats] = useState({
+    74→    total: 0,
+    75→    wins: 0,
+    76→    losses: 0,
+    77→    winRate: 0,
+    78→    totalPips: 0,
+    79→    openCount: 0,
+    80→  });
+    81→  const [tickPrice, setTickPrice] = useState<{ bid: number; ask: number } | null>(null);
+    82→  const [mode, setMode] = useState<"LIVE" | "SIMULATION">("SIMULATION");
+    83→  const [starting, setStarting] = useState(false);
+    84→  const [stopping, setStopping] = useState(false);
+    85→  const [candles, setCandles] = useState<any[]>([]);
+    86→  const [lastSignal, setLastSignal] = useState<string>("بانتظار إشارة...");
+    87→
+    88→  // Refresh status (trades + stats)
+    89→  const refreshStatus = useCallback(async () => {
+    90→    if (!mt5.sessionId) return;
+    91→    try {
+    92→      const res = await fetch("/api/bot/status", {
+    93→        method: "POST",
+    94→        headers: { "Content-Type": "application/json" },
+    95→        body: JSON.stringify({ sessionId: mt5.sessionId }),
+    96→      });
+    97→      const data = await res.json();
+    98→      if (data.ok) {
+    99→        setTrades(data.trades);
+   100→        setStats(data.stats);
+   101→        if (data.botRunning !== botConfig.botRunning) {
+   102→          setBotConfig({ botRunning: data.botRunning });
+   103→        }
+   104→      }
+   105→    } catch {}
+   106→  }, [mt5.sessionId, botConfig.botRunning, setBotConfig]);
+   107→
+   108→  // Refresh market price + candles
+   109→  const refreshMarket = useCallback(async () => {
+   110→    try {
+   111→      const [priceRes, candlesRes, modeRes] = await Promise.all([
+   112→        fetch(`/api/market/price?symbol=${botConfig.symbol}`),
+   113→        fetch(`/api/market/candles?symbol=${botConfig.symbol}&timeframe=${botConfig.timeframe}&limit=30`),
+   114→        fetch("/api/system/mode"),
+   115→      ]);
+   116→      const pData = await priceRes.json();
+   117→      const cData = await candlesRes.json();
+   118→      const mData = await modeRes.json();
+   119→      if (pData.ok) {
+   120→        setTickPrice({ bid: pData.tick.bid, ask: pData.tick.ask });
+   121→      }
+   122→      if (cData.ok) {
+   123→        setCandles(cData.candles);
+   124→      }
+   125→      if (mData.ok) {
+   126→        setMode(mData.mode);
+   127→      }
+   128→    } catch {}
+   129→  }, [botConfig.symbol, botConfig.timeframe]);
+   130→
+   131→  // Initial load + intervals
+   132→  useEffect(() => {
+   133→    refreshStatus();
+   134→    refreshMarket();
+   135→    const statusTimer = setInterval(refreshStatus, 2000);
+   136→    const marketTimer = setInterval(refreshMarket, 1000);
+   137→    return () => {
+   138→      clearInterval(statusTimer);
+   139→      clearInterval(marketTimer);
+   140→    };
+   141→  }, [refreshStatus, refreshMarket]);
+   142→
+   143→  // Update config on server
+   144→  const updateConfig = async (patch: any) => {
+   145→    setBotConfig(patch);
+   146→    if (!mt5.sessionId) return;
+   147→    try {
+   148→      await fetch("/api/bot/config", {
+   149→        method: "POST",
+   150→        headers: { "Content-Type": "application/json" },
+   151→        body: JSON.stringify({ sessionId: mt5.sessionId, ...patch }),
+   152→      });
+   153→    } catch {}
+   154→  };
+   155→
+   156→  const handleStart = async () => {
+   157→    setStarting(true);
+   158→    try {
+   159→      const res = await fetch("/api/bot/start", {
+   160→        method: "POST",
+   161→        headers: { "Content-Type": "application/json" },
+   162→        body: JSON.stringify({ sessionId: mt5.sessionId }),
+   163→      });
+   164→      const data = await res.json();
+   165→      if (data.ok) {
+   166→        setBotConfig({ botRunning: true, botStartedAt: new Date().toISOString() });
+   167→        toast({
+   168→          title: "تم تشغيل البوت",
+   169→          description: "البوت يلتقط الصفقات تلقائياً الآن على MT5",
+   170→        });
+   171→        setLastSignal("البوت يعمل — يراقب الشموع...");
+   172→      } else {
+   173→        toast({
+   174→          title: "فشل تشغيل البوت",
+   175→          description: data.error,
+   176→          variant: "destructive",
+   177→        });
+   178→      }
+   179→    } finally {
+   180→      setStarting(false);
+   181→    }
+   182→  };
+   183→
+   184→  const handleStop = async () => {
+   185→    setStopping(true);
+   186→    try {
+   187→      const res = await fetch("/api/bot/stop", {
+   188→        method: "POST",
+   189→        headers: { "Content-Type": "application/json" },
+   190→        body: JSON.stringify({ sessionId: mt5.sessionId }),
+   191→      });
+   192→      const data = await res.json();
+   193→      if (data.ok) {
+   194→        setBotConfig({ botRunning: false });
+   195→        toast({
+   196→          title: "تم إيقاف البوت",
+   197→          description: "تم إغلاق جميع الصفقات المفتوحة",
+   198→        });
+   199→      }
+   200→    } finally {
+   201→      setStopping(false);
+   202→    }
+   203→  };
+   204→
+   205→  const handleLogout = () => {
+   206→    reset();
+   207→    // Stay on the same page (will fall back to activation)
+   208→  };
+   209→
+   210→  const daysLeft = activation.expiresAt
+   211→    ? Math.max(
+   212→        0,
+   213→        Math.ceil(
+   214→          (new Date(activation.expiresAt).getTime() - Date.now()) /
+   215→            (1000 * 60 * 60 * 24)
+   216→        )
+   217→      )
+   218→    : 0;
+   219→
+   220→  return (
+   221→    <div className="min-h-screen p-3 md:p-6">
+   222→      {/* Top bar */}
+   223→      <header className="flex items-center justify-between mb-5 flex-wrap gap-3">
+   224→        <div className="flex items-center gap-3">
+   225→          <AlfaLogo size={44} />
+   226→          <AlfaWordmark subtitle={false} />
+   227→        </div>
+   228→        <div className="flex items-center gap-2 flex-wrap">
+   229→          <Badge
+   230→            variant="outline"
+   231→            className={
+   232→              mode === "LIVE"
+   233→                ? "border-green-400/50 text-green-300 bg-green-500/10"
+   234→                : "border-amber-400/50 text-amber-300 bg-amber-500/10"
+   235→            }
+   236→          >
+   237→            <Wifi className="w-3 h-3 ml-1" />
+   238→            {mode === "LIVE" ? "LIVE — MT5 حقيقي" : "SIMULATION"}
+   239→          </Badge>
+   240→          <Badge
+   241→            variant="outline"
+   242→            className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10"
+   243→          >
+   244→            <Clock className="w-3 h-3 ml-1" />
+   245→            {daysLeft} يوم
+   246→          </Badge>
+   247→          <Button
+   248→            size="sm"
+   249→            variant="outline"
+   250→            onClick={handleLogout}
+   251→            className="border-red-500/30 text-red-300 hover:bg-red-500/10 hover:text-red-200"
+   252→          >
+   253→            <LogOut className="w-4 h-4 ml-1" />
+   254→            خروج
+   255→          </Button>
+   256→        </div>
+   257→      </header>
+   258→
+   259→      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+   260→        {/* === Left column: Bot config + controls === */}
+   261→        <div className="lg:col-span-4 space-y-4">
+   262→          {/* Account snapshot */}
+   263→          <Card className="glass-panel neon-border-soft">
+   264→            <CardContent className="p-5">
+   265→              <div className="flex items-center justify-between mb-3">
+   266→                <h3 className="text-sm font-bold text-cyan-200 flex items-center gap-1.5">
+   267→                  <Wallet className="w-4 h-4 text-cyan-400" />
+   268→                  حساب MT5
+   269→                </h3>
+   270→                <RefreshCw
+   271→                  className="w-4 h-4 text-cyan-400/50 cursor-pointer hover:text-cyan-300 animate-spin"
+   272→                  style={{ animationDuration: "3s" }}
+   273→                  onClick={refreshStatus}
+   274→                />
+   275→              </div>
+   276→              <div className="grid grid-cols-2 gap-3">
+   277→                <StatBox
+   278→                  label="الرقم"
+   279→                  value={mt5.mt5Login || "—"}
+   280→                  icon={<Cpu className="w-3 h-3" />}
+   281→                />
+   282→                <StatBox
+   283→                  label="السيرفر"
+   284→                  value={mt5.mt5Server || "—"}
+   285→                  icon={<Wifi className="w-3 h-3" />}
+   286→                />
+   287→                <StatBox
+   288→                  label="الرصيد"
+   289→                  value={`${mt5.balance?.toFixed(2) || "—"} ${mt5.currency}`}
+   290→                  icon={<Wallet className="w-3 h-3" />}
+   291→                  highlight
+   292→                />
+   293→                <StatBox
+   294→                  label="Equity"
+   295→                  value={`${mt5.equity?.toFixed(2) || "—"} ${mt5.currency}`}
+   296→                  icon={<Gauge className="w-3 h-3" />}
+   297→                />
+   298→              </div>
+   299→            </CardContent>
+   300→          </Card>
+   301→
+   302→          {/* Configuration */}
+   303→          <Card className="glass-panel neon-border-soft">
+   304→            <CardContent className="p-5 space-y-4">
+   305→              <h3 className="text-sm font-bold text-cyan-200 flex items-center gap-1.5">
+   306→                <CandlestickChart className="w-4 h-4 text-cyan-400" />
+   307→                إعدادات البوت
+   308→              </h3>
+   309→
+   310→              {/* Symbol */}
+   311→              <div className="space-y-1.5">
+   312→                <Label className="text-xs text-cyan-200/70">الزوج (فقط فوركس)</Label>
+   313→                <Select
+   314→                  value={botConfig.symbol}
+   315→                  onValueChange={(v) => updateConfig({ symbol: v })}
+   316→                  disabled={botConfig.botRunning}
+   317→                >
+   318→                  <SelectTrigger className="bg-black/40 border-cyan-500/30 text-cyan-50 font-mono">
+   319→                    <SelectValue />
+   320→                  </SelectTrigger>
+   321→                  <SelectContent className="bg-black/90 border-cyan-500/30 max-h-72">
+   322→                    {FOREX_SYMBOLS.map((s) => (
+   323→                      <SelectItem
+   324→                        key={s.value}
+   325→                        value={s.value}
+   326→                        className="text-cyan-100 focus:bg-cyan-500/20 focus:text-cyan-50"
+   327→                      >
+   328→                        {s.label}
+   329→                      </SelectItem>
+   330→                    ))}
+   331→                  </SelectContent>
+   332→                </Select>
+   333→              </div>
+   334→
+   335→              {/* Timeframe */}
+   336→              <div className="space-y-1.5">
+   337→                <Label className="text-xs text-cyan-200/70">تايم فريم</Label>
+   338→                <Select
+   339→                  value={botConfig.timeframe}
+   340→                  onValueChange={(v) => updateConfig({ timeframe: v })}
+   341→                  disabled={botConfig.botRunning}
+   342→                >
+   343→                  <SelectTrigger className="bg-black/40 border-cyan-500/30 text-cyan-50 font-mono">
+   344→                    <SelectValue />
+   345→                  </SelectTrigger>
+   346→                  <SelectContent className="bg-black/90 border-cyan-500/30">
+   347→                    {TIMEFRAMES.map((t) => (
+   348→                      <SelectItem
+   349→                        key={t.value}
+   350→                        value={t.value}
+   351→                        className="text-cyan-100 focus:bg-cyan-500/20 focus:text-cyan-50"
+   352→                      >
+   353→                        {t.label}
+   354→                      </SelectItem>
+   355→                    ))}
+   356→                  </SelectContent>
+   357→                </Select>
+   358→              </div>
+   359→
+   360→              {/* Lot */}
+   361→              <div className="space-y-1.5">
+   362→                <Label className="text-xs text-cyan-200/70">حجم اللوت</Label>
+   363→                <Input
+   364→                  type="number"
+   365→                  step="0.01"
+   366→                  min="0.01"
+   367→                  value={botConfig.lotSize}
+   368→                  onChange={(e) =>
+   369→                    updateConfig({ lotSize: parseFloat(e.target.value) || 0.01 })
+   370→                  }
+   371→                  disabled={botConfig.botRunning}
+   372→                  className="bg-black/40 border-cyan-500/30 text-cyan-50 font-mono"
+   373→                />
+   374→              </div>
+   375→
+   376→              {/* Auto TP/SL toggle */}
+   377→              <div className="flex items-center justify-between py-2">
+   378→                <div>
+   379→                  <Label className="text-xs text-cyan-200/70 block">
+   380→                    TP / SL تلقائي
+   381→                  </Label>
+   382→                  <span className="text-[10px] text-cyan-300/50">
+   383→                    10 نقاط ربح / 7 نقاط خسارة
+   384→                  </span>
+   385→                </div>
+   386→                <Switch
+   387→                  checked={botConfig.autoTpSl}
+   388→                  onCheckedChange={(v) => updateConfig({ autoTpSl: v })}
+   389→                  disabled={botConfig.botRunning}
+   390→                />
+   391→              </div>
+   392→
+   393→              {/* Manual TP/SL */}
+   394→              {!botConfig.autoTpSl && (
+   395→                <div className="grid grid-cols-2 gap-2">
+   396→                  <div className="space-y-1.5">
+   397→                    <Label className="text-xs text-green-300/70 flex items-center gap-1">
+   398→                      <Target className="w-3 h-3" /> TP (نقاط)
+   399→                    </Label>
+   400→                    <Input
+   401→                      type="number"
+   402→                      step="0.1"
+   403→                      value={botConfig.tpPips}
+   404→                      onChange={(e) =>
+   405→                        updateConfig({ tpPips: parseFloat(e.target.value) || 10 })
+   406→                      }
+   407→                      disabled={botConfig.botRunning}
+   408→                      className="bg-black/40 border-green-500/30 text-green-100 font-mono"
+   409→                    />
+   410→                  </div>
+   411→                  <div className="space-y-1.5">
+   412→                    <Label className="text-xs text-red-300/70 flex items-center gap-1">
+   413→                      <ShieldAlert className="w-3 h-3" /> SL (نقاط)
+   414→                    </Label>
+   415→                    <Input
+   416→                      type="number"
+   417→                      step="0.1"
+   418→                      value={botConfig.slPips}
+   419→                      onChange={(e) =>
+   420→                        updateConfig({ slPips: parseFloat(e.target.value) || 7 })
+   421→                      }
+   422→                      disabled={botConfig.botRunning}
+   423→                      className="bg-black/40 border-red-500/30 text-red-100 font-mono"
+   424→                    />
+   425→                  </div>
+   426→                </div>
+   427→              )}
+   428→
+   429→              <Separator className="bg-cyan-500/20" />
+   430→
+   431→              {/* Start / Stop buttons */}
+   432→              <div className="grid grid-cols-2 gap-2">
+   433→                <Button
+   434→                  onClick={handleStart}
+   435→                  disabled={botConfig.botRunning || starting}
+   436→                  className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold neon-glow border-0 h-12"
+   437→                >
+   438→                  {starting ? (
+   439→                    <RefreshCw className="w-5 h-5 ml-2 animate-spin" />
+   440→                  ) : (
+   441→                    <Play className="w-5 h-5 ml-2" />
+   442→                  )}
+   443→                  تشغيل البوت
+   444→                </Button>
+   445→                <Button
+   446→                  onClick={handleStop}
+   447→                  disabled={!botConfig.botRunning || stopping}
+   448→                  variant="outline"
+   449→                  className="border-red-500/40 text-red-300 hover:bg-red-500/10 hover:text-red-200 font-bold h-12"
+   450→                >
+   451→                  {stopping ? (
+   452→                    <RefreshCw className="w-5 h-5 ml-2 animate-spin" />
+   453→                  ) : (
+   454→                    <Square className="w-5 h-5 ml-2" />
+   455→                  )}
+   456→                  إيقاف البوت
+   457→                </Button>
+   458→              </div>
+   459→
+   460→              <div className="text-[10px] text-cyan-300/50 text-center leading-relaxed">
+   461→                عند التشغيل ينتقل البوت تلقائياً للعمل على MT5 (موبايل أو كمبيوتر)
+   462→                ويبدأ بالتقاط الصفقات دون تدخل منك.
+   463→              </div>
+   464→            </CardContent>
+   465→          </Card>
+   466→        </div>
+   467→
+   468→        {/* === Middle column: Live chart + status === */}
+   469→        <div className="lg:col-span-5 space-y-4">
+   470→          {/* Live price */}
+   471→          <Card className="glass-panel neon-border-soft">
+   472→            <CardContent className="p-5">
+   473→              <div className="flex items-center justify-between mb-3">
+   474→                <h3 className="text-sm font-bold text-cyan-200 flex items-center gap-1.5">
+   475→                  <Activity className="w-4 h-4 text-cyan-400" />
+   476→                  سعر {botConfig.symbol} لحظياً
+   477→                </h3>
+   478→                <Badge
+   479→                  variant="outline"
+   480→                  className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 font-mono"
+   481→                >
+   482→                  {botConfig.timeframe}
+   483→                </Badge>
+   484→              </div>
+   485→              <div className="grid grid-cols-2 gap-3">
+   486→                <div className="rounded-xl bg-red-500/5 border border-red-500/20 p-3">
+   487→                  <div className="text-[10px] text-red-300/70 mb-1">BID</div>
+   488→                  <div className="text-2xl font-mono font-bold text-red-300 neon-text-soft">
+   489→                    {tickPrice ? tickPrice.bid.toFixed(2) : "—"}
+   490→                  </div>
+   491→                </div>
+   492→                <div className="rounded-xl bg-green-500/5 border border-green-500/20 p-3">
+   493→                  <div className="text-[10px] text-green-300/70 mb-1">ASK</div>
+   494→                  <div className="text-2xl font-mono font-bold text-green-300 neon-text-soft">
+   495→                    {tickPrice ? tickPrice.ask.toFixed(2) : "—"}
+   496→                  </div>
+   497→                </div>
+   498→              </div>
+   499→              {tickPrice && (
+   500→                <div className="mt-3 flex items-center justify-between text-xs">
+   501→                  <span className="text-cyan-200/60">
+   502→                    السبريد:{" "}
+   503→                    <span className="text-cyan-300 font-mono">
+   504→                      {((tickPrice.ask - tickPrice.bid) / 0.1).toFixed(2)}
+   505→                    </span>{" "}
+   506→                    نقطة
+   507→                  </span>
+   508→                  <span className="text-cyan-200/60 flex items-center gap-1">
+   509→                    <Zap className="w-3 h-3 text-yellow-400" />
+   510→                    {botConfig.botRunning ? "البوت يعمل" : "البوت متوقف"}
+   511→                  </span>
+   512→                </div>
+   513→              )}
+   514→            </CardContent>
+   515→          </Card>
+   516→
+   517→          {/* Live candlestick chart */}
+   518→          <Card className="glass-panel neon-border-soft">
+   519→            <CardContent className="p-5">
+   520→              <div className="flex items-center justify-between mb-3">
+   521→                <h3 className="text-sm font-bold text-cyan-200 flex items-center gap-1.5">
+   522→                  <CandlestickChart className="w-4 h-4 text-cyan-400" />
+   523→                  مخطط الشموع — Wick-to-Wick Detection
+   524→                </h3>
+   525→              </div>
+   526→              <LiveCandleChart candles={candles} minWickRatio={botConfig.minWickRatio} />
+   527→              <div className="mt-3 text-xs text-cyan-200/70 bg-cyan-500/5 border border-cyan-500/20 rounded-lg p-3 flex items-start gap-2">
+   528→                <Zap className="w-4 h-4 mt-0.5 text-yellow-400 shrink-0" />
+   529→                <span className="leading-relaxed">{lastSignal}</span>
+   530→              </div>
+   531→            </CardContent>
+   532→          </Card>
+   533→        </div>
+   534→
+   535→        {/* === Right column: Stats + Trades === */}
+   536→        <div className="lg:col-span-3 space-y-4">
+   537→          {/* Stats grid */}
+   538→          <Card className="glass-panel neon-border-soft">
+   539→            <CardContent className="p-5">
+   540→              <h3 className="text-sm font-bold text-cyan-200 mb-3 flex items-center gap-1.5">
+   541→                <Gauge className="w-4 h-4 text-cyan-400" />
+   542→                إحصائيات الأداء
+   543→              </h3>
+   544→              <div className="space-y-2">
+   545→                <StatRow
+   546→                  label="إجمالي الصفقات"
+   547→                  value={String(stats.total)}
+   548→                  icon={<Activity className="w-3 h-3" />}
+   549→                />
+   550→                <StatRow
+   551→                  label="صفقات رابحة"
+   552→                  value={String(stats.wins)}
+   553→                  icon={<TrendingUp className="w-3 h-3 text-green-400" />}
+   554→                  color="text-green-300"
+   555→                />
+   556→                <StatRow
+   557→                  label="صفقات خاسرة"
+   558→                  value={String(stats.losses)}
+   559→                  icon={<TrendingDown className="w-3 h-3 text-red-400" />}
+   560→                  color="text-red-300"
+   561→                />
+   562→                <StatRow
+   563→                  label="نسبة النجاح"
+   564→                  value={`${stats.winRate.toFixed(1)}%`}
+   565→                  icon={<Target className="w-3 h-3" />}
+   566→                  color={
+   567→                    stats.winRate >= 60
+   568→                      ? "text-green-300"
+   569→                      : stats.winRate >= 50
+   570→                      ? "text-yellow-300"
+   571→                      : "text-red-300"
+   572→                  }
+   573→                />
+   574→                <StatRow
+   575→                  label="إجمالي النقاط"
+   576→                  value={`${stats.totalPips.toFixed(1)} pip`}
+   577→                  icon={<Zap className="w-3 h-3 text-yellow-400" />}
+   578→                  color={stats.totalPips >= 0 ? "text-green-300" : "text-red-300"}
+   579→                />
+   580→                <StatRow
+   581→                  label="صفقات مفتوحة"
+   582→                  value={String(stats.openCount)}
+   583→                  icon={<Timer className="w-3 h-3" />}
+   584→                  color="text-cyan-300"
+   585→                />
+   586→              </div>
+   587→            </CardContent>
+   588→          </Card>
+   589→
+   590→          {/* Recent trades */}
+   591→          <Card className="glass-panel neon-border-soft">
+   592→            <CardContent className="p-5">
+   593→              <h3 className="text-sm font-bold text-cyan-200 mb-3 flex items-center gap-1.5">
+   594→                <CandlestickChart className="w-4 h-4 text-cyan-400" />
+   595→                آخر الصفقات
+   596→              </h3>
+   597→              <div className="max-h-96 overflow-y-auto space-y-2 pr-1">
+   598→                <AnimatePresence>
+   599→                  {trades.length === 0 ? (
+   600→                    <div className="text-center py-8 text-cyan-300/40 text-sm">
+   601→                      لا توجد صفقات بعد
+   602→                    </div>
+   603→                  ) : (
+   604→                    trades.map((t) => <TradeRow key={t.id} trade={t} />)
+   605→                  )}
+   606→                </AnimatePresence>
+   607→              </div>
+   608→            </CardContent>
+   609→          </Card>
+   610→        </div>
+   611→      </div>
+   612→
+   613→      {/* Footer */}
+   614→      <footer className="mt-6 text-center text-xs text-cyan-300/40 py-4">
+   615→        ALFA Reports — استراتيجية تسليم الأذيل · XAUUSD · M1 · TP 10 / SL 7 ·
+   616→        تنفيذ لحظي صاروخي
+   617→      </footer>
+   618→    </div>
+   619→  );
+   620→}
+   621→
+   622→// ---------- Sub-components ----------
+   623→
+   624→function StatBox({
+   625→  label,
+   626→  value,
+   627→  icon,
+   628→  highlight,
+   629→}: {
+   630→  label: string;
+   631→  value: string;
+   632→  icon: React.ReactNode;
+   633→  highlight?: boolean;
+   634→}) {
+   635→  return (
+   636→    <div
+   637→      className={`rounded-lg p-2.5 border ${
+   638→        highlight
+   639→          ? "bg-cyan-500/10 border-cyan-500/30"
+   640→          : "bg-black/30 border-cyan-500/15"
+   641→      }`}
+   642→    >
+   643→      <div className="flex items-center gap-1 text-[10px] text-cyan-300/60 mb-0.5">
+   644→        {icon}
+   645→        {label}
+   646→      </div>
+   647→      <div className="text-sm font-mono font-bold text-cyan-100 truncate">{value}</div>
+   648→    </div>
+   649→  );
+   650→}
+   651→
+   652→function StatRow({
+   653→  label,
+   654→  value,
+   655→  icon,
+   656→  color = "text-cyan-100",
+   657→}: {
+   658→  label: string;
+   659→  value: string;
+   660→  icon: React.ReactNode;
+   661→  color?: string;
+   662→}) {
+   663→  return (
+   664→    <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-cyan-500/5">
+   665→      <span className="text-xs text-cyan-200/70 flex items-center gap-1.5">
+   666→        {icon}
+   667→        {label}
+   668→      </span>
+   669→      <span className={`text-sm font-mono font-bold ${color}`}>{value}</span>
+   670→    </div>
+   671→  );
+   672→}
+   673→
+   674→function TradeRow({ trade }: { trade: Trade }) {
+   675→  const isBuy = trade.direction === "BUY";
+   676→  const isWin = (trade.profitPips ?? 0) > 0;
+   677→  const statusColor =
+   678→    trade.status === "OPEN"
+   679→      ? "border-cyan-400/50 text-cyan-300 bg-cyan-500/10"
+   680→      : trade.status === "CLOSED_TP"
+   681→      ? "border-green-400/50 text-green-300 bg-green-500/10"
+   682→      : trade.status === "CLOSED_SL"
+   683→      ? "border-red-400/50 text-red-300 bg-red-500/10"
+   684→      : trade.status === "ERROR"
+   685→      ? "border-red-500/50 text-red-400 bg-red-500/20"
+   686→      : "border-cyan-400/30 text-cyan-300/70 bg-cyan-500/5";
+   687→
+   688→  return (
+   689→    <motion.div
+   690→      initial={{ opacity: 0, x: 20 }}
+   691→      animate={{ opacity: 1, x: 0 }}
+   692→      exit={{ opacity: 0, x: -20 }}
+   693→      className={`rounded-lg border p-2.5 ${statusColor}`}
+   694→    >
+   695→      <div className="flex items-center justify-between mb-1">
+   696→        <div className="flex items-center gap-1.5">
+   697→          <span
+   698→            className={`text-xs font-bold ${
+   699→              isBuy ? "text-green-300" : "text-red-300"
+   700→            }`}
+   701→          >
+   702→            {isBuy ? "BUY" : "SELL"}
+   703→          </span>
+   704→          <span className="text-xs font-mono text-cyan-100">{trade.symbol}</span>
+   705→        </div>
+   706→        <span className="text-[10px] font-mono opacity-70">
+   707→          {new Date(trade.openedAt).toLocaleTimeString("en-GB")}
+   708→        </span>
+   709→      </div>
+   710→      <div className="flex items-center justify-between text-[11px] font-mono">
+   711→        <span className="text-cyan-200/70">
+   712→          @ {trade.entryPrice.toFixed(2)}
+   713→          {trade.exitPrice && ` → ${trade.exitPrice.toFixed(2)}`}
+   714→        </span>
+   715→        {trade.profitPips != null && (
+   716→          <span
+   717→            className={`font-bold ${
+   718→              trade.status === "OPEN"
+   719→                ? "text-cyan-300"
+   720→                : isWin
+   721→                ? "text-green-300"
+   722→                : "text-red-300"
+   723→            }`}
+   724→          >
+   725→            {trade.profitPips > 0 ? "+" : ""}
+   726→            {trade.profitPips.toFixed(1)} pip
+   727→          </span>
+   728→        )}
+   729→      </div>
+   730→      <div className="flex items-center justify-between mt-1 text-[10px]">
+   731→        <span className="opacity-60">
+   732→          {trade.status === "OPEN" && <Clock className="w-3 h-3 inline ml-1" />}
+   733→          {trade.status === "CLOSED_TP" && (
+   734→            <CheckCircle2 className="w-3 h-3 inline ml-1" />
+   735→          )}
+   736→          {trade.status === "CLOSED_SL" && <XCircle className="w-3 h-3 inline ml-1" />}
+   737→          {trade.status === "CLOSED_TIME" && <Timer className="w-3 h-3 inline ml-1" />}
+   738→          {trade.status.replace("CLOSED_", "")}
+   739→        </span>
+   740→        <span className="opacity-60 font-mono">{trade.lotSize} lot</span>
+   741→      </div>
+   742→    </motion.div>
+   743→  );
+   744→}
+   745→
+   746→/** Live candlestick chart with wick highlight */
+   747→function LiveCandleChart({
+   748→  candles,
+   749→  minWickRatio,
+   750→}: {
+   751→  candles: any[];
+   752→  minWickRatio: number;
+   753→}) {
+   754→  if (candles.length === 0) {
+   755→    return (
+   756→      <div className="h-48 flex items-center justify-center text-cyan-300/40 text-sm">
+   757→        جاري تحميل الشموع...
+   758→      </div>
+   759→    );
+   760→  }
+   761→  const highs = candles.map((c) => c.high);
+   762→  const lows = candles.map((c) => c.low);
+   763→  const max = Math.max(...highs);
+   764→  const min = Math.min(...lows);
+   765→  const range = max - min || 1;
+   766→  const W = 600;
+   767→  const H = 220;
+   768→  const candleW = W / candles.length;
+   769→  const y = (p: number) => H - ((p - min) / range) * (H - 20) - 10;
+   770→
+   771→  return (
+   772→    <div className="relative w-full overflow-hidden rounded-lg bg-black/30 border border-cyan-500/15">
+   773→      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-56" preserveAspectRatio="none">
+   774→        {/* grid */}
+   775→        {[0.25, 0.5, 0.75].map((f) => (
+   776→          <line
+   777→            key={f}
+   778→            x1="0"
+   779→            y1={H * f}
+   780→            x2={W}
+   781→            y2={H * f}
+   782→            stroke="rgba(0,229,255,0.06)"
+   783→            strokeWidth="1"
+   784→          />
+   785→        ))}
+   786→        {candles.map((c, i) => {
+   787→          const x = i * candleW + candleW / 2;
+   788→          const isUp = c.close >= c.open;
+   789→          const color = isUp ? "#22d3a7" : "#fb7185";
+   790→          const bodyTop = y(Math.max(c.open, c.close));
+   791→          const bodyBottom = y(Math.min(c.open, c.close));
+   792→          const wickHigh = y(c.high);
+   793→          const wickLow = y(c.low);
+   794→          const range2 = c.high - c.low;
+   795→          const lowerWick = Math.min(c.open, c.close) - c.low;
+   796→          const upperWick = c.high - Math.max(c.open, c.close);
+   797→          const isLongLower = lowerWick / range2 >= minWickRatio && range2 > 0;
+   798→          const isLongUpper = upperWick / range2 >= minWickRatio && range2 > 0;
+   799→          return (
+   800→            <g key={i}>
+   801→              {/* wick */}
+   802→              <line
+   803→                x1={x}
+   804→                y1={wickHigh}
+   805→                x2={x}
+   806→                y2={wickLow}
+   807→                stroke={color}
+   808→                strokeWidth="1"
+   809→                opacity={isLongLower || isLongUpper ? 1 : 0.6}
+   810→              />
+   811→              {/* body */}
+   812→              <rect
+   813→                x={x - Math.max(2, candleW / 3)}
+   814→                y={bodyTop}
+   815→                width={Math.max(4, candleW * 0.66)}
+   816→                height={Math.max(1, bodyBottom - bodyTop)}
+   817→                fill={color}
+   818→                opacity={0.85}
+   819→              />
+   820→              {/* highlight long wick tip */}
+   821→              {isLongLower && (
+   822→                <circle cx={x} cy={wickLow} r="3" fill="#00e5ff">
+   823→                  <animate
+   824→                    attributeName="r"
+   825→                    values="2;5;2"
+   826→                    dur="1.4s"
+   827→                    repeatCount="indefinite"
+   828→                  />
+   829→                </circle>
+   830→              )}
+   831→              {isLongUpper && (
+   832→                <circle cx={x} cy={wickHigh} r="3" fill="#00e5ff">
+   833→                  <animate
+   834→                    attributeName="r"
+   835→                    values="2;5;2"
+   836→                    dur="1.4s"
+   837→                    repeatCount="indefinite"
+   838→                  />
+   839→                </circle>
+   840→              )}
+   841→            </g>
+   842→          );
+   843→        })}
+   844→      </svg>
+   845→      <div className="absolute top-2 left-2 text-[10px] font-mono text-cyan-300/70">
+   846→        HIGH {max.toFixed(2)}
+   847→      </div>
+   848→      <div className="absolute bottom-2 left-2 text-[10px] font-mono text-cyan-300/70">
+   849→        LOW {min.toFixed(2)}
+   850→      </div>
+   851→    </div>
+   852→  );
+   853→}
+   854→

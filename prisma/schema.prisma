@@ -65,6 +65,14 @@ model BotConfig {
   timeExitMinutes Int      @default(2)
   minWickRatio    Float    @default(0.5)
   maxSpreadPips   Float    @default(3.0)
+  // High-frequency mode: open a trade at every M1 candle close (default OFF).
+  // When ON, the bot skips waiting for price to revisit the wick tip and fires
+  // immediately on every new closed M1 candle, choosing direction by the
+  // dominant wick (lower wick → BUY, upper wick → SELL, no wick → momentum).
+  highFrequencyMode Boolean @default(false)
+  // Last M1 candle time the HF engine has already traded on (avoids duplicate
+  // entries on the same candle). Stored as ISO string.
+  lastHfCandleTime String?
   botRunning      Boolean  @default(false)
   botStartedAt    DateTime?
   createdAt       DateTime @default(now())
