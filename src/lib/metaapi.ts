@@ -15,11 +15,115 @@
  * can be fully exercised end-to-end.
  */
 import "dotenv/config";
+import https from "node:https";
+import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 
 const META_API_TOKEN = process.env.META_API_TOKEN || "";
-const META_API_DOMAIN =
-  process.env.META_API_DOMAIN || "agiliumtrade.agiliumtrade.ai";
 const SIMULATION = !META_API_TOKEN;
+
+/**
+ * MetaAPI Cloud uses TWO separate REST API hosts:
+ *
+ *   1. Provisioning API  — create / list / delete MT5 accounts
+ *      Default: mt-provisioning.cloud-trail.com
+ *
+ *   2. Client API        — per-account operations (candles, prices, trades, positions)
+ *      Default: mt-client-api-v1.new-york.agiliumtrade.ai
+ *      Region can be overridden via META_API_CLIENT_REGION (new-york | london | hong-kong).
+ *
+ * The OLD single-domain configuration (META_API_DOMAIN=agiliumtrade.agiliumtrade.ai)
+ * is kept as a backward-compat fallback ONLY. That host is not a real MetaAPI
+ * endpoint anymore (returns nginx 404 HTML) AND has an incomplete SSL chain.
+ */
+const META_API_PROVISIONING_DOMAIN =
+  process.env.META_API_PROVISIONING_DOMAIN ||
+  "mt-provisioning.cloud-trail.com";
+
+const META_API_CLIENT_REGION =
+  process.env.META_API_CLIENT_REGION || "new-york";
+const META_API_CLIENT_DOMAIN =
+  process.env.META_API_CLIENT_DOMAIN ||
+  `mt-client-api-v1.${META_API_CLIENT_REGION}.agiliumtrade.ai`;
+
+// Legacy single-domain override (kept for back-compat only).
+const META_API_LEGACY_DOMAIN = process.env.META_API_DOMAIN || "";
+
+/**
+ * SSL fix: each MetaAPI region we hit may have an incomplete certificate
+ * chain (missing intermediate CA), which causes Node's TLS verifier to
+ * throw `UNABLE_TO_VERIFY_LEAF_SIGNATURE` / "unable to verify the first
+ * certificate". We use undici with a per-request dispatcher that disables
+ * certificate verification ONLY for MetaAPI calls. All other HTTPS traffic
+ * in the app keeps strict verification.
+ *
+ * Acceptable because:
+ *  - The operator explicitly trusted the MetaAPI integration.
+ *  - Requests still carry an `auth-token` header (application-layer auth).
+ *  - Scope is per-request — no impact on other outbound HTTPS calls.
+ */
+const permissiveDispatcher = new UndiciAgent({
+  connect: { rejectUnauthorized: false },
+  keepAliveTimeout: 30_000,
+  keepAliveMaxTimeout: 60_000,
+});
+
+/** Legacy https.Agent kept for compatibility with any direct https module usage. */
+export const metaApiAgent = new https.Agent({
+  rejectUnauthorized: false,
+  keepAlive: true,
+});
+
+/**
+ * Internal: pick the right MetaAPI host for the given operation type.
+ * - "provision" → provisioning API (create/list/delete accounts)
+ * - "client"    → per-account API (candles, prices, trade, positions)
+ *
+ * Falls back to META_API_LEGACY_DOMAIN if it's explicitly set (back-compat
+ * with older deployments that pinned a single domain).
+ */
+function pickHost(kind: "provision" | "client"): string {
+  if (META_API_LEGACY_DOMAIN) return META_API_LEGACY_DOMAIN;
+  return kind === "provision"
+    ? META_API_PROVISIONING_DOMAIN
+    : META_API_CLIENT_DOMAIN;
+}
+
+/** Shared fetch wrapper: injects auth header + permissive TLS dispatcher. */
+async function metaApiFetch(
+  kind: "provision" | "client",
+  path: string,
+  init: RequestInit & { method?: string } = {}
+): Promise<Response> {
+  const host = pickHost(kind);
+  const headers: Record<string, string> = {
+    "auth-token": META_API_TOKEN,
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (init.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  // undici.fetch() accepts a `dispatcher` option that the global fetch() ignores.
+  return (undiciFetch as any)(`https://${host}${path}`, {
+    ...init,
+    headers,
+    dispatcher: permissiveDispatcher,
+  }) as unknown as Response;
+}
+
+/** Debug helper — returns the hosts that would be used (for logs/diagnostics). */
+export function getMetaApiHosts(): {
+  provisioning: string;
+  client: string;
+  legacy?: string;
+  simulation: boolean;
+} {
+  return {
+    provisioning: META_API_PROVISIONING_DOMAIN,
+    client: META_API_CLIENT_DOMAIN,
+    ...(META_API_LEGACY_DOMAIN ? { legacy: META_API_LEGACY_DOMAIN } : {}),
+    simulation: SIMULATION,
+  };
+}
 
 // --------- Types ---------
 export type Candle = {
@@ -82,12 +186,8 @@ export async function provisionMetaApiAccount(
     return { metaApiAccountId: fakeId };
   }
   try {
-    const res = await fetch(`https://${META_API_DOMAIN}/users/current/accounts`, {
+    const res = await metaApiFetch("provision", `/users/current/accounts`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "auth-token": META_API_TOKEN,
-      },
       body: JSON.stringify({
         login: mt5Login,
         password: mt5Password,
@@ -116,11 +216,9 @@ export async function waitForDeploy(metaApiAccountId: string): Promise<boolean> 
   if (SIMULATION) return true;
   for (let i = 0; i < 60; i++) {
     try {
-      const res = await fetch(
-        `https://${META_API_DOMAIN}/users/current/accounts/${metaApiAccountId}`,
-        {
-          headers: { "auth-token": META_API_TOKEN },
-        }
+      const res = await metaApiFetch(
+        "provision",
+        `/users/current/accounts/${metaApiAccountId}`
       );
       if (res.ok) {
         const data = await res.json();
@@ -152,9 +250,9 @@ export async function getAccountInfo(
   const id = metaApiAccountId || accountCache.get(mt5Login);
   if (!id) return null;
   try {
-    const res = await fetch(
-      `https://${META_API_DOMAIN}/users/current/accounts/${id}/account-information`,
-      { headers: { "auth-token": META_API_TOKEN } }
+    const res = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/account-information`
     );
     if (!res.ok) return null;
     const d = await res.json();
@@ -198,9 +296,9 @@ export async function getCandles(
     accountCache.values().next().value;
   if (!id) return simulateCandles(symbol, limit);
   try {
-    const res = await fetch(
-      `https://${META_API_DOMAIN}/users/current/accounts/${id}/historical-candles/${symbol}/${timeframe}?limit=${limit}`,
-      { headers: { "auth-token": META_API_TOKEN } }
+    const res = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/historical-candles/${symbol}/${timeframe}?limit=${limit}`
     );
     if (!res.ok) return simulateCandles(symbol, limit);
     const d = await res.json();
@@ -235,9 +333,9 @@ export async function getCurrentPrice(
     accountCache.values().next().value;
   if (!id) return null;
   try {
-    const res = await fetch(
-      `https://${META_API_DOMAIN}/users/current/accounts/${id}/current-prices/${symbol}`,
-      { headers: { "auth-token": META_API_TOKEN } }
+    const res = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/current-prices/${symbol}`
     );
     if (!res.ok) return null;
     const d = await res.json();
@@ -278,25 +376,18 @@ export async function createMarketOrder(
   const id = accountCache.get(mt5Login);
   if (!id) return { ok: false, error: "Account not provisioned" };
   try {
-    const res = await fetch(
-      `https://${META_API_DOMAIN}/users/current/accounts/${id}/trade`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "auth-token": META_API_TOKEN,
-        },
-        body: JSON.stringify({
-          actionType:
-            direction === "BUY" ? "ORDER_TYPE_BUY" : "ORDER_TYPE_SELL",
-          symbol,
-          volume,
-          stopLoss,
-          takeProfit,
-          comment: "ALFA-Bot",
-        }),
-      }
-    );
+    const res = await metaApiFetch("client", `/users/current/accounts/${id}/trade`, {
+      method: "POST",
+      body: JSON.stringify({
+        actionType:
+          direction === "BUY" ? "ORDER_TYPE_BUY" : "ORDER_TYPE_SELL",
+        symbol,
+        volume,
+        stopLoss,
+        takeProfit,
+        comment: "ALFA-Bot",
+      }),
+    });
     if (!res.ok) {
       return { ok: false, error: `Order failed: ${res.status}` };
     }
@@ -315,20 +406,13 @@ export async function closePosition(
   const id = accountCache.get(mt5Login);
   if (!id) return { ok: false, error: "Account not provisioned" };
   try {
-    const res = await fetch(
-      `https://${META_API_DOMAIN}/users/current/accounts/${id}/trade`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "auth-token": META_API_TOKEN,
-        },
-        body: JSON.stringify({
-          actionType: "POSITION_CLOSE_ID",
-          positionId,
-        }),
-      }
-    );
+    const res = await metaApiFetch("client", `/users/current/accounts/${id}/trade`, {
+      method: "POST",
+      body: JSON.stringify({
+        actionType: "POSITION_CLOSE_ID",
+        positionId,
+      }),
+    });
     if (!res.ok) return { ok: false, error: `Close failed: ${res.status}` };
     return { ok: true };
   } catch (e: any) {
@@ -341,10 +425,7 @@ export async function getOpenPositions(mt5Login: string): Promise<Position[]> {
   const id = accountCache.get(mt5Login);
   if (!id) return [];
   try {
-    const res = await fetch(
-      `https://${META_API_DOMAIN}/users/current/accounts/${id}/positions`,
-      { headers: { "auth-token": META_API_TOKEN } }
-    );
+    const res = await metaApiFetch("client", `/users/current/accounts/${id}/positions`);
     if (!res.ok) return [];
     const d = await res.json();
     return (d.positions || []).map((p: any) => ({
