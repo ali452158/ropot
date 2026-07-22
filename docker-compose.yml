@@ -6,6 +6,9 @@
 #   1. Install Traefik proxy (running on ports 80/443)
 #   2. Make sure Traefik is on the `traefik-public` network
 #   3. DNS for bot.scalper.com → your VPS IP
+#
+# If Traefik is NOT installed, comment out the traefik-public network
+# and all traefik.* labels below. The container will still run on port 3000.
 # ============================================================
 
 services:
@@ -15,6 +18,8 @@ services:
       dockerfile: Dockerfile
     container_name: alfa-reports
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     env_file:
       - .env
     environment:
@@ -25,8 +30,6 @@ services:
     volumes:
       # Persist SQLite DB across container restarts
       - alfa_db:/app/db
-      # Mount .env at runtime so you can edit without rebuilding
-      - ./.env:/app/.env:ro
     networks:
       - traefik-public
       - alfa-net
@@ -57,23 +60,13 @@ services:
       - "traefik.http.middlewares.alfa-headers.headers.forceSTSHeader=true"
       - "traefik.http.routers.alfa.middlewares=alfa-headers@docker"
 
-      # Optional: also expose under localhost for direct debugging on port 3000
-      - "traefik.http.routers.alfa-local.rule=Host(`localhost`)"
-      - "traefik.http.routers.alfa-local.entrypoints=http"
-      - "traefik.http.routers.alfa-local.service=alfa-svc"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/system/mode"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
 volumes:
   alfa_db:
     driver: local
 
 networks:
   # External network that Traefik listens on (must exist on the VPS)
+  # If Traefik is NOT installed, change `external: true` to `external: false`
   traefik-public:
     external: true
   alfa-net:

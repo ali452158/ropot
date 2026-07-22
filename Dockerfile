@@ -1,32 +1,53 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================
-# ALFA Reports — Dockerfile (Next.js 16 standalone + Prisma + Bun)
-# Simplified for Hostinger Docker Manager compatibility
+# ALFA Reports — Dockerfile (Next.js 16 standalone + Prisma)
+# Uses Node.js 22 for maximum compatibility with Next.js 16 build.
+# Bun caused build failures on Hostinger (Next.js 16 + Bun build
+# incompatibility + OOM during next build). Node.js is the runtime
+# that Vercel tests next build against.
 # ============================================================
 
 # ---------- Stage 1: deps ----------
-FROM oven/bun:1.1 AS deps
+FROM node:22-slim AS deps
 WORKDIR /app
 
-COPY package.json bun.lock* package-lock.json* ./
+# OpenSSL for Prisma + curl for healthchecks + ca-certs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json* ./
 COPY prisma ./prisma
 
-RUN bun install --frozen-lockfile || bun install
+# Use --legacy-peer-deps to handle React 19 peer dep warnings from Radix UI
+# Fallback to plain install if ci fails (lockfile mismatch)
+RUN npm ci --legacy-peer-deps --no-audit --no-fund 2>/dev/null || \
+    npm install --legacy-peer-deps --no-audit --no-fund
 
 # ---------- Stage 2: builder ----------
-FROM oven/bun:1.1 AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
+
+# OpenSSL needed by prisma generate during install
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+# Allow Next.js 16 build to use up to 4GB RAM (prevents OOM on small VPS)
+ENV NODE_OPTIONS=--max-old-space-size=4096
 
-RUN bun run build
+RUN npm run build
 
 # ---------- Stage 3: runner ----------
-FROM oven/bun:1.1 AS runner
+FROM node:22-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -34,8 +55,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 ENV DATABASE_URL=file:/app/db/custom.db
+# Allow runtime Node to use more memory if needed
+ENV NODE_OPTIONS=--max-old-space-size=2048
 
-# OpenSSL for Prisma + curl for healthchecks + ca-certs
+# OpenSSL for Prisma + curl for healthchecks
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     curl \
@@ -61,5 +84,5 @@ COPY --from=builder /app/node_modules/undici ./node_modules/undici
 
 EXPOSE 3000
 
-# Run migrations then start the standalone server
-CMD ["sh", "-c", "bunx prisma db push --accept-data-loss --schema=./prisma/schema.prisma && bun server.js"]
+# Run migrations then start the standalone server (Node, not Bun)
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss --schema=./prisma/schema.prisma && node server.js"]
