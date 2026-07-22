@@ -86,8 +86,10 @@ export function Mt5LoginScreen() {
         currency: data.account.currency,
       });
       toast({
-        title: "تم الاتصال بـ MT5",
-        description: `مرحباً بك في حسابك ${data.account.login} (${data.mode})`,
+        title: "تم الاتصال بـ MT5 ✓",
+        description: data.botAutoStarted
+          ? `مرحباً ${data.account.login} — البوت بدأ التداول تلقائياً على حسابك`
+          : `مرحباً ${data.account.login} (${data.mode})`,
       });
       setStage("dashboard");
     } catch (e: any) {

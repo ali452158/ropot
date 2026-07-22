@@ -492,6 +492,16 @@ export function DashboardScreen() {
                 عند التشغيل ينتقل البوت تلقائياً للعمل على MT5 (موبايل أو كمبيوتر)
                 ويبدأ بالتقاط الصفقات دون تدخل منك.
               </div>
+
+              {/* Auto-started banner (shown when bot is running) */}
+              {botConfig.botRunning && (
+                <div className="mt-3 rounded-lg bg-emerald-500/10 border border-emerald-400/40 px-3 py-2 flex items-center gap-2 text-[11px] text-emerald-200">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                  <span>
+                    البوت <b className="text-emerald-100">يعمل تلقائياً</b> على حسابك — بدأ التداول فور تسجيل دخولك إلى MT5
+                  </span>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
