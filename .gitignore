@@ -1,7 +1,8 @@
+# === ALFA Reports .gitignore ===
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-node_modules
+# === Dependencies ===
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -9,46 +10,67 @@ node_modules
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+bun.lockb
 
-# testing
-/coverage
-
-# next.js
+# === Next.js ===
 /.next/
 /out/
-
-# production
 /build
+/dist/
 
-# misc
-.DS_Store
-*.pem
+# === Production ===
+*.tsbuildinfo
+next-env.d.ts
 
-# debug
+# === Environment ===
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# === Database (local SQLite) ===
+db/*.db
+db/*.db-journal
+db/*.sqlite
+db/*.sqlite-journal
+
+# === Logs ===
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-local-*
-.claude
-.z-ai-config
-*.log
 dev.log
 dev.out.log
-test
+server.log
+
+# === Misc ===
+.DS_Store
+*.pem
+*.swp
+.idea/
+.vscode/
+.tox
+.claude
+.z-ai-config
+local-*
+.vercel
 prompt
 
-server.log
-# Skills directory
+# === ALFA-specific ===
 /skills/
+/examples/
+/mini-services/node_modules/
+/mini-services/*/node_modules/
+/mini-services/*/bun.lock
+/mini-services/*/.next/
+/upload/
+/tool-results/
+/agent-ctx/
+/worklog.md
+
+# === Keep these (do NOT ignore) ===
+!.env.example
+!.gitignore
+!README.md
