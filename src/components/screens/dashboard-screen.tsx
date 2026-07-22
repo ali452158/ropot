@@ -112,9 +112,10 @@ export function DashboardScreen() {
   // Refresh market price + candles
   const refreshMarket = useCallback(async () => {
     try {
+      const sid = mt5.sessionId ? `&sessionId=${encodeURIComponent(mt5.sessionId)}` : "";
       const [priceRes, candlesRes, modeRes] = await Promise.all([
-        fetch(`/api/market/price?symbol=${botConfig.symbol}`),
-        fetch(`/api/market/candles?symbol=${botConfig.symbol}&timeframe=${botConfig.timeframe}&limit=30`),
+        fetch(`/api/market/price?symbol=${botConfig.symbol}${sid}`),
+        fetch(`/api/market/candles?symbol=${botConfig.symbol}&timeframe=${botConfig.timeframe}&limit=30${sid}`),
         fetch("/api/system/mode"),
       ]);
       const pData = await priceRes.json();
@@ -269,7 +270,7 @@ export function DashboardScreen() {
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-bold text-cyan-200 flex items-center gap-1.5">
                   <Wallet className="w-4 h-4 text-cyan-400" />
-                  حساب MT5
+                  حسابك على MT5
                 </h3>
                 <RefreshCw
                   className="w-4 h-4 text-cyan-400/50 cursor-pointer hover:text-cyan-300 animate-spin"
@@ -299,6 +300,13 @@ export function DashboardScreen() {
                   value={`${mt5.equity?.toFixed(2) || "—"} ${mt5.currency}`}
                   icon={<Gauge className="w-3 h-3" />}
                 />
+              </div>
+              <div className="mt-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20 px-3 py-2 text-[10px] leading-relaxed text-cyan-200/70 flex items-start gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 mt-0.5 shrink-0 text-cyan-400" />
+                <span>
+                  أنت تتداول على <b className="text-cyan-200">حسابك الخاص</b> على MT5 —
+                  البوت ينفّذ الصفقات مباشرة على حسابك، وكل مشترك يستخدم حسابه المستقل.
+                </span>
               </div>
             </CardContent>
           </Card>

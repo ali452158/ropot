@@ -57,6 +57,29 @@ export function getActiveSessionCount(): number {
   return activeSessions.size;
 }
 
+/**
+ * Returns a snapshot of every currently-running bot session — used by the
+ * admin endpoint so the operator can see which subscribers are trading right
+ * now, on which MT5 logins, on which symbols.
+ */
+export function listActiveSessions(): Array<{
+  sessionToken: string;
+  mt5Login: string;
+  symbol: string;
+  timeframe: string;
+  highFrequencyMode: boolean;
+  hasOpenPosition: boolean;
+}> {
+  return Array.from(activeSessions.values()).map((s) => ({
+    sessionToken: s.sessionToken,
+    mt5Login: s.mt5Login,
+    symbol: s.symbol,
+    timeframe: s.timeframe,
+    highFrequencyMode: s.highFrequencyMode,
+    hasOpenPosition: !!s.currentPosition,
+  }));
+}
+
 export async function startBot(sessionToken: string): Promise<{ ok: boolean; error?: string }> {
   if (activeSessions.has(sessionToken)) {
     return { ok: true };
@@ -116,7 +139,7 @@ export async function stopBot(sessionToken: string): Promise<{ ok: boolean; erro
   if (ctx.currentPosition) {
     const cp = ctx.currentPosition;
     await closePosition(ctx.mt5Login, cp.positionId);
-    const price = await getCurrentPrice(ctx.symbol);
+    const price = await getCurrentPrice(ctx.symbol, ctx.mt5Login);
     if (price) {
       const exitPrice = cp.direction === "BUY" ? price.bid : price.ask;
       const profitPips = calculateProfitPips(cp.direction, cp.openPrice, exitPrice);
@@ -161,8 +184,8 @@ async function tickOnce(ctx: ActiveSession) {
   // Reflect HF flag changes live (no need to restart bot).
   ctx.highFrequencyMode = cfg.highFrequencyMode;
 
-  const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 30);
-  const price = await getCurrentPrice(cfg.symbol);
+  const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 30, ctx.mt5Login);
+  const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
   if (!candles.length || !price) return;
 
   // 1) Manage open position first.
@@ -360,7 +383,7 @@ export async function reconcilePositions() {
       const positions = await getOpenPositions(ctx.mt5Login);
       if (positions.length === 0 && ctx.currentPosition) {
         const cp = ctx.currentPosition;
-        const price = await getCurrentPrice(ctx.symbol);
+        const price = await getCurrentPrice(ctx.symbol, ctx.mt5Login);
         const exitPrice = price
           ? cp.direction === "BUY"
             ? price.bid

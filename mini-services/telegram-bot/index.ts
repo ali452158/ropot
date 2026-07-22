@@ -88,6 +88,13 @@ async function listCodes() {
   return res.json();
 }
 
+async function listActiveSessions() {
+  const res = await fetch(`${APP_BASE_URL}/api/admin/sessions`, {
+    headers: { "X-Admin-Token": ADMIN_API_TOKEN },
+  });
+  return res.json();
+}
+
 async function handleUpdate(update: TgUpdate) {
   const msg = update.message;
   if (!msg || !msg.text) return;
@@ -111,8 +118,10 @@ async function handleUpdate(update: TgUpdate) {
           `الأوامر المتاحة:\n` +
           `• <code>/generate [n]</code> — توليد n أكواد جديدة (افتراضي 1، حد أقصى 50)\n` +
           `• <code>/list</code> — عرض آخر 20 كود\n` +
-          `• <code>/stats</code> — إحصائيات سريعة\n\n` +
-          `كل كود يعمل على جهاز واحد فقط لمدة 30 يوماً.`
+          `• <code>/stats</code> — إحصائيات سريعة للأكواد\n` +
+          `• <code>/subs</code> — عرض المشتركين النشطين الآن (البوتات التي تعمل)\n\n` +
+          `كل كود يعمل على جهاز واحد فقط لمدة 30 يوماً.\n` +
+          `كل مشترك يدخل بيانات حسابه على MT5 فيشغّل البوت على حسابه الخاص.`
       );
       return;
     }
@@ -198,6 +207,39 @@ async function handleUpdate(update: TgUpdate) {
           `🔴 منتهية: <b>${expired}</b>\n` +
           `⚫ ملغاة: <b>${revoked}</b>`
       );
+      return;
+    }
+
+    if (command === "/subs") {
+      const data = await listActiveSessions();
+      if (!data.ok) {
+        await sendText(msg.chat.id, `❌ فشل: <code>${data.error}</code>`);
+        return;
+      }
+      const bots = data.activeBots || [];
+      if (bots.length === 0) {
+        await sendText(
+          msg.chat.id,
+          `📭 لا يوجد بوت يعمل حالياً.\n\n` +
+            `عدد الجلسات المرتبطة: <b>${data.recentSessions?.length || 0}</b>\n` +
+            `حسابات MT5 المجهّزة في هذا الـ worker: <b>${data.provisionedLogins?.length || 0}</b>`
+        );
+        return;
+      }
+      const lines: string[] = [
+        `🟢 <b>${bots.length}</b> مشترك نشط الآن:\n`,
+      ];
+      for (const b of bots) {
+        const pos = b.hasOpenPosition ? " · صفقة مفتوحة" : "";
+        const hf = b.highFrequencyMode ? " · HF" : "";
+        lines.push(
+          `• <code>${b.mt5Login}</code> — ${b.symbol}/${b.timeframe}${hf}${pos}`
+        );
+      }
+      lines.push(
+        `\n📊 إجمالي الجلسات: <b>${data.recentSessions?.length || 0}</b>`
+      );
+      await sendText(msg.chat.id, lines.join("\n"));
       return;
     }
 
