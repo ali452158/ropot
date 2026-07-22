@@ -1,0 +1,35 @@
+# ============================================================
+# .dockerignore — keep Docker build context lean
+# ============================================================
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+*.log
+dev.log
+server.log
+npm-debug.log*
+bun-debug.log*
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.md
+!README.md
+!DEPLOY-HOSTINGER.md
+download
+upload
+tool-results
+worklog.md
+skills
+tests
+examples
+mini-services
+scripts/test-*
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm

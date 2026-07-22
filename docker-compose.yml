@@ -1,0 +1,45 @@
+# ============================================================
+# ALFA Reports — docker-compose.yml (Hostinger VPS ready)
+# Usage:
+#   1. Copy .env.example -> .env and fill in real values
+#   2. docker compose up -d --build
+#   3. App will be available on http://YOUR_VPS_IP:3000
+# ============================================================
+
+services:
+  alfa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alfa-reports
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=file:/app/db/custom.db
+    volumes:
+      # Persist SQLite DB across container restarts
+      - alfa_db:/app/db
+      # Optional: mount .env at runtime so you can edit without rebuilding
+      - ./.env:/app/.env:ro
+    networks:
+      - alfa-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/system/mode"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  alfa_db:
+    driver: local
+
+networks:
+  alfa-net:
+    driver: bridge
