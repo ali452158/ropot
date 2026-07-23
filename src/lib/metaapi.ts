@@ -22,6 +22,25 @@ const META_API_TOKEN = process.env.META_API_TOKEN || "";
 const SIMULATION = !META_API_TOKEN;
 
 /**
+ * MASTER ACCOUNT CONCEPT
+ * ----------------------
+ * The bot follows a Master-Subscriber architecture:
+ *   - ONE master MT5 account (configured via META_API_MASTER_LOGIN env var)
+ *     acts as the SOLE market-data source for ALL bot sessions.
+ *   - Each subscriber's MT5 account is provisioned separately and is used
+ *     ONLY for trade execution (createMarketOrder, closePosition, etc).
+ *
+ * The master account MUST be already provisioned in the MetaApi dashboard
+ * under the same META_API_TOKEN. We resolve its metaApiAccountId once at
+ * startup (and cache it) by calling findExistingMetaApiAccount(login).
+ */
+const META_API_MASTER_LOGIN = process.env.META_API_MASTER_LOGIN || "";
+
+// Resolved once at startup; null until resolution completes (or in simulation).
+let masterMetaApiAccountId: string | null = null;
+let masterResolutionPromise: Promise<string | null> | null = null;
+
+/**
  * MetaAPI Cloud uses TWO separate REST API hosts (verified against the official
  * metaapi.cloud-sdk v29.2.0 source code on npm):
  *
@@ -458,30 +477,93 @@ export async function getAccountInfo(
   }
 }
 
+// --------- Master account resolution ---------
+//
+// The bot uses a MASTER-SUBSCRIBER architecture:
+//   - The MASTER account (e.g. 474240052) is the SOLE market-data source.
+//     It must already be provisioned in the MetaApi dashboard under the same
+//     META_API_TOKEN. We resolve its metaApiAccountId once at startup and
+//     cache it for the lifetime of the process.
+//   - Each SUBSCRIBER's MT5 account is provisioned separately (when they log
+//     in via the bot) and is used ONLY for trade execution.
+//
+// If META_API_MASTER_LOGIN is not set, we fall back to the first cached
+// account (preserves backwards compatibility with single-account deployments).
+
+/**
+ * Resolve the master MetaApi account ID. Idempotent — concurrent callers
+ * share the same resolution promise. Returns null if:
+ *   - SIMULATION mode (no token)
+ *   - META_API_MASTER_LOGIN is not set AND no accounts are cached
+ *   - The configured master login is not found in the provisioning API
+ */
+export async function getMasterMetaApiAccountId(): Promise<string | null> {
+  if (SIMULATION) return null;
+  if (masterMetaApiAccountId) return masterMetaApiAccountId;
+  if (masterResolutionPromise) return masterResolutionPromise;
+
+  masterResolutionPromise = (async () => {
+    // 1) If a master login is configured, look it up in the provisioning API.
+    if (META_API_MASTER_LOGIN) {
+      const id = await findExistingMetaApiAccount(META_API_MASTER_LOGIN);
+      if (id) {
+        masterMetaApiAccountId = id;
+        console.log(
+          `[MetaApi] Master account resolved: login=${META_API_MASTER_LOGIN} metaApiAccountId=${id}`
+        );
+        return id;
+      }
+      console.warn(
+        `[MetaApi] Master login ${META_API_MASTER_LOGIN} not found in provisioning API. ` +
+          `Falling back to first cached account. Make sure this account is provisioned in the MetaApi dashboard.`
+      );
+    }
+    // 2) Fallback: use the first cached account (if any).
+    const fallback = accountCache.values().next().value || null;
+    if (fallback) {
+      masterMetaApiAccountId = fallback;
+      console.log(
+        `[MetaApi] Master fallback: using first cached account ${fallback}`
+      );
+    }
+    return fallback;
+  })().finally(() => {
+    masterResolutionPromise = null;
+  });
+
+  return masterResolutionPromise;
+}
+
+/** Synchronous getter — returns the cached master account ID (or null). */
+export function getCachedMasterMetaApiAccountId(): string | null {
+  return masterMetaApiAccountId;
+}
+
+/** Returns the configured master login (from env), or empty string. */
+export function getMasterLogin(): string {
+  return META_API_MASTER_LOGIN;
+}
+
 // --------- Market data ---------
 //
-// Each bot session belongs to a DIFFERENT subscriber, and each subscriber has
-// their own MT5 account + their own MetaAPI provisioning. So getCandles() and
-// getCurrentPrice() MUST accept the subscriber's mt5Login so they fetch market
-// data through THAT subscriber's MetaAPI account — not through a random shared
-// account. If the subscriber's account is not (yet) provisioned, we fall back
-// to any cached account (market data is symbol-global) and finally to
-// simulation mode.
+// ARCHITECTURE: All market data (candles + current price) is fetched through
+// the MASTER account, NOT the subscriber's account. The subscriber's MT5
+// account is used ONLY for trade execution (createMarketOrder / closePosition
+// / getOpenPositions / getAccountInfo). The `mt5Login` argument on
+// getCandles/getCurrentPrice is kept for backwards-compat but is IGNORED —
+// the master account is always used.
 
 export async function getCandles(
   symbol: string,
   timeframe: string,
   limit = 50,
-  mt5Login?: string
+  _mt5Login?: string // deprecated — kept for back-compat, ignored
 ): Promise<Candle[]> {
   if (SIMULATION) {
     return simulateCandles(symbol, limit);
   }
-  // Prefer the subscriber's own MetaAPI account; fall back to any cached
-  // account; finally fall back to simulation.
-  const id =
-    (mt5Login && accountCache.get(mt5Login)) ||
-    accountCache.values().next().value;
+  // ALWAYS use the master account for market data.
+  const id = (await getMasterMetaApiAccountId()) || accountCache.values().next().value;
   if (!id) return simulateCandles(symbol, limit);
   try {
     const res = await metaApiFetch(
@@ -505,7 +587,7 @@ export async function getCandles(
 
 export async function getCurrentPrice(
   symbol: string,
-  mt5Login?: string
+  _mt5Login?: string // deprecated — kept for back-compat, ignored
 ): Promise<Tick | null> {
   if (SIMULATION) {
     const base = 2350 + (Math.random() - 0.5) * 20;
@@ -516,9 +598,8 @@ export async function getCurrentPrice(
       time: new Date().toISOString(),
     };
   }
-  const id =
-    (mt5Login && accountCache.get(mt5Login)) ||
-    accountCache.values().next().value;
+  // ALWAYS use the master account for market data.
+  const id = (await getMasterMetaApiAccountId()) || accountCache.values().next().value;
   if (!id) return null;
   try {
     const res = await metaApiFetch(

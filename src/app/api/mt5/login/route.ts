@@ -6,7 +6,7 @@ import {
   hashPassword,
 } from "@/lib/security";
 import { newSessionToken } from "@/lib/codes";
-import { provisionMetaApiAccount, getAccountInfo, isSimulationMode } from "@/lib/metaapi";
+import { provisionMetaApiAccount, getAccountInfo, isSimulationMode, getMasterMetaApiAccountId, getMasterLogin } from "@/lib/metaapi";
 import { startBot } from "@/lib/bot-runner";
 
 export const runtime = "nodejs";
@@ -59,6 +59,8 @@ export async function POST(req: NextRequest) {
     }
 
     // 2) Provision the MetaAPI account for this MT5 login.
+    //    (Also fires-and-forgets the master-account warm-up so that market
+    //    data is ready by the time the bot starts its first tick.)
     const provision = await provisionMetaApiAccount(
       mt5Login,
       mt5Password,
@@ -69,6 +71,13 @@ export async function POST(req: NextRequest) {
         { ok: false, error: provision.error || "فشل في ربط حساب MT5" },
         { status: 502 }
       );
+    }
+
+    // 2b) Fire-and-forget: warm up the master account in parallel with the
+    //     subscriber's provisioning. The master is the SOLE market-data source
+    //     for all bot sessions (configured via META_API_MASTER_LOGIN env var).
+    if (!isSimulationMode() && getMasterLogin()) {
+      getMasterMetaApiAccountId().catch(() => {});
     }
 
     // 3) Test the account info.

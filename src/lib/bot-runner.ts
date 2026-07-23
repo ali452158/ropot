@@ -16,6 +16,8 @@ import {
   getOpenPositions,
   getAccountInfo,
   isSimulationMode,
+  getMasterMetaApiAccountId,
+  getMasterLogin,
 } from "./metaapi";
 import {
   evaluateEntry,
@@ -89,6 +91,23 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
   const internalId = session.id;
   const cfg = await db.botConfig.findUnique({ where: { sessionId: internalId } });
   if (!cfg) return { ok: false, error: "bot config not found" };
+
+  // Warm up the master account (market-data source) on first bot start.
+  // This is idempotent — subsequent calls return the cached ID instantly.
+  if (!isSimulationMode()) {
+    const masterLogin = getMasterLogin();
+    if (masterLogin) {
+      const masterId = await getMasterMetaApiAccountId();
+      if (masterId) {
+        console.log(`[BotRunner] Master account warmed up: login=${masterLogin} id=${masterId}`);
+      } else {
+        console.warn(
+          `[BotRunner] Master account ${masterLogin} could not be resolved. ` +
+            `Market data will fall back to first cached account or simulation.`
+        );
+      }
+    }
+  }
 
   await db.botConfig.update({
     where: { sessionId: internalId },
