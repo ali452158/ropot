@@ -37,7 +37,7 @@ const SIMULATION = !META_API_TOKEN;
  */
 const META_API_PROVISIONING_DOMAIN =
   process.env.META_API_PROVISIONING_DOMAIN ||
-  "mt-provisioning.cloud-trail.com";
+  "api.metaapi.cloud";
 
 const META_API_CLIENT_REGION =
   process.env.META_API_CLIENT_REGION || "new-york";
