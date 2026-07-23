@@ -378,14 +378,22 @@ export async function provisionMetaApiAccount(
   }
 
   // STEP 2: Try to create a new account.
+  // Updated payload based on NewMetatraderAccountDto schema (verified against
+  // metaapi.cloud-sdk v29.2.0):
+  //   - `server` (NOT `serverName`) — text name of the broker server
+  //   - `name` — required human-readable account name
+  //   - `type: "cloud-g2"` — newer/faster/cheaper than legacy "cloud"
+  //   - `platform: "mt5"` — explicit MT5 platform
   try {
     const res = await metaApiFetch("provision", `/users/current/accounts`, {
       method: "POST",
       body: JSON.stringify({
         login: mt5Login,
         password: mt5Password,
-        serverName: mt5Server,
-        type: "cloud",
+        server: mt5Server,
+        name: `ALFA Subscriber ${mt5Login}`,
+        type: "cloud-g2",
+        platform: "mt5",
         application: "ALFA-Reports",
         magic: 770077,
       }),
@@ -403,6 +411,17 @@ export async function provisionMetaApiAccount(
             `الحل: (1) احذف حساباً قديماً من لوحة تحكم MetaApi لتفريغ مكان، ` +
             `أو (2) ارتقِ إلى خطة مدفوعة، ` +
             `أو (3) استخدم توكن JWT جديد بصلاحيات كاملة من إعدادات MetaApi. ` +
+            `تفاصيل الخطأ الأصلي: ${text}`,
+        };
+      }
+      // Friendly error for validation failures (wrong server name format)
+      if (res.status === 400) {
+        return {
+          metaApiAccountId: "",
+          error:
+            `MetaApi رفض بيانات الحساب (400 ValidationError). ` +
+            `السبب الأكثر شيوعاً: اسم السيرفر "${mt5Server}" غير معروف لدى MetaApi. ` +
+            `تأكد من الاسم الصحيح من تطبيق MT5 أو من رسالة البريد الإلكتروني من الوسيط. ` +
             `تفاصيل الخطأ الأصلي: ${text}`,
         };
       }
