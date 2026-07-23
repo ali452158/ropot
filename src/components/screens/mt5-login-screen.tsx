@@ -21,6 +21,8 @@ import {
   Loader2,
   ShieldCheck,
   AlertCircle,
+  ArrowRight as ArrowBack,
+  LogOut,
 } from "lucide-react";
 
 const COMMON_SERVERS = [
@@ -39,7 +41,7 @@ const COMMON_SERVERS = [
 ];
 
 export function Mt5LoginScreen() {
-  const { activation, setMT5, setStage } = useAppStore();
+  const { activation, setMT5, setStage, reset } = useAppStore();
   const [mt5Login, setMt5Login] = useState("");
   const [mt5Password, setMt5Password] = useState("");
   const [mt5Server, setMt5Server] = useState("");
@@ -47,6 +49,19 @@ export function Mt5LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const { toast } = useToast();
+
+  // زر الخروج — يرجع المستخدم لصفحة إدخال الكود ويمسح بيانات الجلسة الحالية
+  const handleBack = () => {
+    if (typeof window !== "undefined") {
+      // مسح أي بيانات حالة محفوظة في localStorage
+      try {
+        localStorage.removeItem("alfa-store");
+        localStorage.removeItem("alfa-activation");
+      } catch {}
+    }
+    // reset() يرجع الحالة كلها للوضع الافتراضي (stage = "activation")
+    reset();
+  };
 
   const handleLogin = async () => {
     setError("");
@@ -137,12 +152,23 @@ export function Mt5LoginScreen() {
                   </span>
                 </span>
               </div>
-              <Badge
-                variant="outline"
-                className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[10px]"
-              >
-                STEP 2 / 3
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[10px]"
+                >
+                  STEP 2 / 3
+                </Badge>
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  title="خروج وإدخال كود جديد"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-400 text-[11px] font-bold transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>خروج</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-2 mb-6">
