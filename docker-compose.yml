@@ -3,8 +3,7 @@
 # ============================================================
 # Standalone version — no Traefik proxy needed.
 # The container runs on port 3000 directly.
-#
-# For HTTPS/domain setup, see DEPLOY-HOSTINGER.md → Traefik section.
+# DNS section added to fix MetaApi hostname resolution.
 # ============================================================
 
 services:
@@ -18,6 +17,10 @@ services:
       - "3000:3000"
     env_file:
       - .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 8.8.4.4
     environment:
       - NODE_ENV=production
       - PORT=3000

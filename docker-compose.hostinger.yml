@@ -1,34 +1,26 @@
 # ============================================================
-# ALFA Reports — docker-compose.hostinger.yml
+# ALFA Reports — docker-compose.yml (Hostinger VPS, no Traefik)
 # ============================================================
-# This version is for Hostinger Docker Manager.
-# Hostinger does NOT build from Dockerfile — it only pulls pre-built images.
-#
-# BEFORE USING:
-#   1. Build & push the image first: ./scripts/build-and-push.sh <your-dockerhub-username>
-#   2. Replace YOUR_DOCKERHUB_USERNAME below with your actual Docker Hub username
-#   3. Create a .env file on the VPS next to this file (use .env.example as template)
-#
-# USAGE ON HOSTINGER VPS:
-#   docker compose -f docker-compose.hostinger.yml up -d
-#
-# USAGE ON HOSTINGER DOCKER MANAGER (web UI):
-#   - Image: YOUR_DOCKERHUB_USERNAME/alfa-reports:latest
-#   - Port: 3000:3000
-#   - Volume: /app/db
-#   - Env file: .env (upload it manually)
+# Standalone version — no Traefik proxy needed.
+# The container runs on port 3000 directly.
+# DNS section added to fix MetaApi hostname resolution.
 # ============================================================
 
 services:
   alfa:
-    # ⚠️ REPLACE with your actual Docker Hub username!
-    image: YOUR_DOCKERHUB_USERNAME/alfa-reports:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: alfa-reports
     restart: unless-stopped
     ports:
       - "3000:3000"
     env_file:
       - .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 8.8.4.4
     environment:
       - NODE_ENV=production
       - PORT=3000
