@@ -1,0 +1,49 @@
+# ============================================================
+# ALFA Reports — docker-compose.hostinger.yml
+# ============================================================
+# This version is for Hostinger Docker Manager.
+# Hostinger does NOT build from Dockerfile — it only pulls pre-built images.
+#
+# BEFORE USING:
+#   1. Build & push the image first: ./scripts/build-and-push.sh <your-dockerhub-username>
+#   2. Replace YOUR_DOCKERHUB_USERNAME below with your actual Docker Hub username
+#   3. Create a .env file on the VPS next to this file (use .env.example as template)
+#
+# USAGE ON HOSTINGER VPS:
+#   docker compose -f docker-compose.hostinger.yml up -d
+#
+# USAGE ON HOSTINGER DOCKER MANAGER (web UI):
+#   - Image: YOUR_DOCKERHUB_USERNAME/alfa-reports:latest
+#   - Port: 3000:3000
+#   - Volume: /app/db
+#   - Env file: .env (upload it manually)
+# ============================================================
+
+services:
+  alfa:
+    # ⚠️ REPLACE with your actual Docker Hub username!
+    image: YOUR_DOCKERHUB_USERNAME/alfa-reports:latest
+    container_name: alfa-reports
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=file:/app/db/custom.db
+    volumes:
+      # Persist SQLite DB across container restarts
+      - alfa_db:/app/db
+    networks:
+      - alfa-net
+
+volumes:
+  alfa_db:
+    driver: local
+
+networks:
+  alfa-net:
+    driver: bridge
