@@ -243,6 +243,99 @@ export type Position = {
 // --------- MetaAPI account management (real mode) ---------
 const accountCache = new Map<string, string>(); // mt5Login -> metaApiAccountId
 
+/**
+ * List all MetaApi accounts provisioned under the current token.
+ * Returns array of { _id, login, server, state, connectionStatus }.
+ *
+ * GET /users/current/accounts on the Provisioning API.
+ * This is the SAME endpoint the MetaApi dashboard uses; read permission is
+ * always granted to the account owner, even when createAccount is not.
+ */
+export async function listMetaApiAccounts(): Promise<
+  Array<{
+    id: string;
+    login: string;
+    server: string;
+    state: string;
+    connectionStatus: string;
+    region?: string;
+    name?: string;
+  }>
+> {
+  if (SIMULATION) return [];
+  try {
+    const res = await metaApiFetch("provision", `/users/current/accounts`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const arr = Array.isArray(data) ? data : data?.accounts || [];
+    return arr.map((a: any) => ({
+      id: a._id || a.id,
+      login: String(a.login),
+      server: a.server,
+      state: a.state,
+      connectionStatus: a.connectionStatus,
+      region: a.region,
+      name: a.name,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Find an existing MetaApi account by MT5 login (and optionally server).
+ * Useful when the token doesn't have createAccount permission (free MetaApi
+ * tier, or read-only token) but the account was already provisioned before.
+ */
+export async function findExistingMetaApiAccount(
+  mt5Login: string
+): Promise<string | null> {
+  if (SIMULATION) return null;
+  // Check in-process cache first
+  const cached = accountCache.get(mt5Login);
+  if (cached) return cached;
+  // Otherwise query the API
+  const accounts = await listMetaApiAccounts();
+  const match = accounts.find((a) => a.login === String(mt5Login));
+  if (match) {
+    accountCache.set(mt5Login, match.id);
+    return match.id;
+  }
+  return null;
+}
+
+/**
+ * Delete a MetaApi provisioned account by its ID.
+ * Requires deleteAccount permission. Useful when an account limit has been
+ * reached and you want to free a slot for a new login.
+ */
+export async function deleteMetaApiAccount(
+  metaApiAccountId: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (SIMULATION) return { ok: true };
+  try {
+    const res = await metaApiFetch(
+      "provision",
+      `/users/current/accounts/${metaApiAccountId}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: `Delete failed: ${res.status} ${text}` };
+    }
+    // Also remove from cache
+    for (const [k, v] of accountCache.entries()) {
+      if (v === metaApiAccountId) {
+        accountCache.delete(k);
+        break;
+      }
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 export async function provisionMetaApiAccount(
   mt5Login: string,
   mt5Password: string,
@@ -253,6 +346,19 @@ export async function provisionMetaApiAccount(
     accountCache.set(mt5Login, fakeId);
     return { metaApiAccountId: fakeId };
   }
+
+  // STEP 1: Try to reuse an already-provisioned account with the same login.
+  // This handles three common scenarios:
+  //   (a) Token has read-only permissions (no createAccount method).
+  //   (b) Account was provisioned in a previous run / from the dashboard.
+  //   (c) Free-tier MetaApi plan that has hit its account quota.
+  const existingId = await findExistingMetaApiAccount(mt5Login);
+  if (existingId) {
+    accountCache.set(mt5Login, existingId);
+    return { metaApiAccountId: existingId };
+  }
+
+  // STEP 2: Try to create a new account.
   try {
     const res = await metaApiFetch("provision", `/users/current/accounts`, {
       method: "POST",
@@ -267,6 +373,20 @@ export async function provisionMetaApiAccount(
     });
     if (!res.ok) {
       const text = await res.text();
+      // Friendly error for the most common permission failure
+      if (res.status === 403) {
+        return {
+          metaApiAccountId: "",
+          error:
+            `MetaApi رفض إنشاء حساب جديد (403 Forbidden). ` +
+            `هذا يعني أن التوكن JWT ليس لديه صلاحية createAccount، ` +
+            `أو أن خطة MetaApi المجانية لديك وصلت للحد الأقصى (عادة حساب واحد). ` +
+            `الحل: (1) احذف حساباً قديماً من لوحة تحكم MetaApi لتفريغ مكان، ` +
+            `أو (2) ارتقِ إلى خطة مدفوعة، ` +
+            `أو (3) استخدم توكن JWT جديد بصلاحيات كاملة من إعدادات MetaApi. ` +
+            `تفاصيل الخطأ الأصلي: ${text}`,
+        };
+      }
       return {
         metaApiAccountId: "",
         error: `MetaAPI provision failed: ${res.status} ${text}`,
