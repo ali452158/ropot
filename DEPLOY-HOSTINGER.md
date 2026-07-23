@@ -1,10 +1,12 @@
 # دليل نشر ALFA Reports على Hostinger VPS
 
-> هذا الدليل يشرح طريقتين للنشر على Hostinger VPS:
-> 1. **الطريقة A — Docker Compose** (الأسهل والأكثر توافقًا مع لوحة Hostinger)
-> 2. **الطريقة B — Bun مباشرة** (إذا فضّلت التحكم اليدوي عبر Web Terminal)
+> ⚠️ **مهم:** Hostinger Docker Manager **لا يبني من Dockerfile** — هو بيشيل صور جاهزة من Docker Hub فقط.
 >
-> اختر طريقة واحدة فقط. الطريقة A موصى بها لأن Hostinger يدعمها أصليًا.
+> هذا الدليل يشرح الطريقة الصحيحة للنشر على Hostinger عبر Docker Hub.
+>
+> ### الطرق المتاحة:
+> 1. **الطريقة A — Docker Hub Image** (الطريقة الوحيدة المتاحة على Hostinger Docker Manager)
+> 2. **الطريقة B — VPS + docker compose يدويًا** (لبناء محلي على VPS عبر SSH)
 
 ---
 
@@ -12,417 +14,375 @@
 
 - خطة Hostinger VPS (KVM 1 على الأقل — 1 vCPU / 1 GB RAM).
 - وصول **SSH** أو **Web Terminal** من لوحة Hostinger.
+- **حساب Docker Hub** (مجاني): https://hub.docker.com/signup
+- **Docker Desktop** على جهازك الشخصي (لبناء الصورة): https://www.docker.com/products/docker-desktop/
 - حساب MetaApi Cloud + توكن صالح (https://app.metaapi.cloud/api-token).
-- اسم نطاق اختياري (مثل `alfa.yourdomain.com`) إذا أردت HTTPS.
+- بوت تيليجرام (من @BotFather) + معرفك (من @userinfobot).
+- اسم نطاق اختياري (مثل `bot.scalper.com`) إذا أردت HTTPS.
 
 ---
 
-## الطريقة A — Docker Compose (موصى بها)
+## الطريقة A — Docker Hub Image (الطريقة الموصى بها على Hostinger)
 
-### الخطوة 1: ادخل إلى Web Terminal من لوحة Hostinger
+### نظرة عامة على الخطوات
+
+```
+[جهازك الشخصي]              [Docker Hub]              [Hostinger VPS]
+     │                            │                           │
+  1. بناء الصورة                    │                           │
+     docker build ─────────────►  رفع الصورة                    │
+                                   alfa-reports:latest           │
+                                                                 │
+                              2. سحب الصورة  ◄─────────────────
+                                 docker pull
+                                                                 │
+                              3. تشغيل الحاوية                    │
+                                 docker run ──► الموقع يعمل ✅
+```
+
+### الخطوة 1: بناء الصورة ورفعها من جهازك الشخصي
+
+#### 1.1 تثبيت Docker Desktop (إذا لم يكن مثبتًا)
+
+نزّل Docker Desktop من: https://www.docker.com/products/docker-desktop/
+
+#### 1.2 إنشاء حساب Docker Hub
+
+1. سجّل في https://hub.docker.com/signup (مجاني)
+2. احفظ اسم المستخدم (مثلاً: `ali452158`)
+
+#### 1.3 استنساخ المشروع من GitHub
+
+```bash
+git clone https://github.com/ali452158/ropot.git alfa-reports
+cd alfa-reports
+```
+
+#### 1.4 تسجيل الدخول إلى Docker Hub
+
+```bash
+docker login
+# أدخل اسم مستخدم Docker Hub وكلمة المرور
+```
+
+#### 1.5 بناء الصورة ورفعها
+
+استخدم السكربت الجاهز:
+
+```bash
+chmod +x scripts/build-and-push.sh
+./scripts/build-and-push.sh ali452158
+# استبدل ali452158 باسم مستخدم Docker Hub الخاص بك
+```
+
+**أو يدويًا:**
+
+```bash
+# بناء الصورة (5-15 دقيقة)
+docker build --platform linux/amd64 \
+  -t ali452158/alfa-reports:latest \
+  -t ali452158/alfa-reports:$(date +%Y%m%d-%H%M%S) \
+  .
+
+# رفعها إلى Docker Hub
+docker push ali452158/alfa-reports:latest
+```
+
+#### 1.6 التحقق من رفع الصورة
+
+- اذهب إلى: https://hub.docker.com/r/YOUR_USERNAME/alfa-reports
+- يجب أن ترى الصورة مع tag `latest`
+
+---
+
+### الخطوة 2: إعداد Hostinger VPS
+
+#### 2.1 الدخول إلى Web Terminal
 
 من لوحة تحكم Hostinger:
 - **VPS → خادمك → Server management → Browser terminal**
 - أو اربط SSH من جهازك: `ssh root@YOUR_VPS_IP`
 
-### الخطوة 2: تثبيت Docker + Docker Compose (إذا لم يكن مثبتًا)
+#### 2.2 تثبيت Docker (إذا لم يكن مثبتًا)
 
 ```bash
-# تحديث الحزم
-apt update && apt upgrade -y
-
-# تثبيت Docker
 curl -fsSL https://get.docker.com | sh
-
-# تفعيل Docker
-systemctl enable docker && systemctl start docker
-
-# التحقق
-docker --version
-docker compose version
+systemctl enable docker
+systemctl start docker
 ```
 
-### الخطوة 3: استنساخ المشروع
+#### 2.3 إعداد مجلد المشروع على الـ VPS
 
 ```bash
-cd /opt
-git clone https://github.com/ali452158/ropot.git alfa
-cd alfa
+mkdir -p /opt/alfa-reports
+cd /opt/alfa-reports
 ```
 
-### الخطوة 4: إعداد ملف `.env`
+#### 2.4 إنشاء ملف `.env`
 
 ```bash
-cp .env.example .env
-nano .env
-```
-
-عدّل القيم التالية (الأهم):
-
-```env
-# قاعدة البيانات — اتركها كما هي (SQLite داخل volume)
+cat > .env << 'EOF'
 DATABASE_URL=file:/app/db/custom.db
-
-# MetaApi Cloud — ضع توكنك الحقيقي
-META_API_TOKEN=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-
-# منطقة خادم MetaApi (الأقرب لوسيطك)
+META_API_TOKEN=ضع_التوكن_هنا
+META_API_PROVISIONING_DOMAIN=mt-provisioning.cloud-trail.com
 META_API_CLIENT_REGION=new-york
-
-# تيليجرام (اختياري لكن موصى به للمشغل)
-TELEGRAM_BOT_TOKEN=YYYYYYYYYYYY:AAAAAAAAAAAAAAAAAAAAAAAA
-ADMIN_TELEGRAM_ID=123456789
-ADMIN_API_TOKEN=ضع-سر-طويل-عشوائي-هنا
+TELEGRAM_BOT_TOKEN=ضع_توكن_البوت_هنا
+ADMIN_TELEGRAM_ID=ضع_معرفك_هنا
 ALFA_APP_BASE_URL=http://YOUR_VPS_IP:3000
+ADMIN_API_TOKEN=uosL8m8cV43mBlw2D5qyMKG6Cvio9xyfB1b88K6eLyTi05a9
+EOF
+
+chmod 600 .env
+nano .env  # عدّل القيم
 ```
 
-احفظ (`Ctrl+O`, `Enter`, `Ctrl+X`).
-
-### الخطوة 5: تشغيل الحاوية
+#### 2.5 تحميل `docker-compose.hostinger.yml`
 
 ```bash
-docker compose up -d --build
+curl -o docker-compose.yml https://raw.githubusercontent.com/ali452158/ropot/main/docker-compose.hostinger.yml
 ```
 
-أول بناء يستغرق 5–10 دقائق (تنزيل الصور + `bun install` + `next build`).
-
-### الخطوة 6: التحقق
+#### 2.6 تعديل اسم مستخدم Docker Hub في الملف
 
 ```bash
-# حالة الحاوية
-docker compose ps
-
-# اللوجات الحية
-docker compose logs -f alfa
-
-# فحص الـ API
-curl http://localhost:3000/api/system/mode
-# المفروض يرجع: {"mode":"LIVE","hasToken":true,...}
-```
-
-افتح المتصفح: `http://YOUR_VPS_IP:3000` — سترى واجهة ALFA Reports مع صورة الروبوت.
-
-### الخطوة 7: فتح المنفذ 3000 في جدار الحماية
-
-```bash
-ufw allow 3000/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw enable
-```
-
-### الخطوة 8 (موصى به): تفعيل HTTPS عبر Traefik + bot.scalper.com
-
-سنستخدم Traefik بدلاً من Caddy لأن Hostinger Docker Manager يدمجه أحيانًا افتراضيًا، ولأن `docker-compose.yml` يحتوي على labels جاهزة لـ Traefik.
-
-#### 1) سجّل DNS
-
-من مزود النطاق (`scalper.com`):
-- نوع: `A`
-- الاسم: `bot`
-- القيمة: `YOUR_VPS_IP`
-- TTL: 300
-
-انتظر 5–10 دقائق حتى ينتشر الـ DNS.
-
-#### 2) أنشئ شبكة Traefik + ثبّت Traefik نفسه
-
-```bash
-# Create external network used by both Traefik and ALFA containers
-docker network create traefik-public 2>/dev/null || true
-
-# Install Traefik config files
-mkdir -p /etc/traefik
-cp /opt/ropot/traefik.yml /etc/traefik/traefik.yml
-cp /opt/ropot/traefik-dynamic.yml /etc/traefik/dynamic.yml
-touch /etc/traefik/acme.json
-chmod 600 /etc/traefik/acme.json
-mkdir -p /var/log/traefik
-
-# Launch Traefik
-cd /opt/ropot
-docker compose -f traefik-stack.yml up -d
-
-# Verify Traefik is running
-docker compose -f traefik-stack.yml ps
-docker compose -f traefik-stack.yml logs --tail=20 traefik
-```
-
-#### 3) (مهم) غيّر كلمة مرور لوحة Traefik
-
-```bash
-# Generate a new basic-auth hash (replace YOUR_PASSWORD):
-htpasswd -nb admin YOUR_PASSWORD
-# Output: admin:$apr1$xyz$...
-
-# Replace the value in traefik-stack.yml line:
-#   traefik.http.middlewares.traefik-auth.basicauth.users=admin:$$apr1$$...
-# (Note: double the $ signs in YAML)
-# Then restart Traefik:
-docker compose -f traefik-stack.yml restart
-```
-
-#### 4) أعد تشغيل ALFA لتفعيل Traefik labels
-
-```bash
-cd /opt/ropot
-docker compose down
-docker compose up -d --build
-```
-
-#### 5) تحقق من استصدار شهادة HTTPS
-
-```bash
-# Watch Traefik logs — should show "Registering certificate" then "Certificate obtained"
-docker compose -f traefik-stack.yml logs -f traefik | grep -i cert
-```
-
-افتح المتصفح: **https://bot.scalper.com** — يجب أن يظهر موقع ALFA Reports بشهادة HTTPS صحيحة.
-
-#### 6) (اختياري) لوحة تحكم Traefik
-
-على DNS، أضف `traefik.scalper.com → YOUR_VPS_IP` ثم افتح:
-- `https://traefik.scalper.com` → لوحة Traefik
-- المستخدم: `admin`
-- كلمة المرور: التي عيّنتها في الخطوة 3
-
-### أوامر الإدارة اليومية (Docker)
-
-```bash
-# إعادة تشغيل
-docker compose restart alfa
-
-# إيقاف
-docker compose down
-
-# تحديث بعد git pull
-git pull && docker compose up -d --build
-
-# لوجات آخر 100 سطر
-docker compose logs --tail=100 alfa
-
-# دخول إلى الحاوية
-docker compose exec alfa sh
+sed -i 's/YOUR_DOCKERHUB_USERNAME/ali452158/g' docker-compose.yml
+# استبدل ali452158 باسم مستخدم Docker Hub الخاص بك
 ```
 
 ---
 
-## الطريقة B — Bun مباشرة (بلا Docker)
+### الخطوة 3: تشغيل الحاوية
 
-### الخطوة 1: تثبيت Bun
+#### 3.1 سحب الصورة وتشغيلها
 
 ```bash
-curl -fsSL https://bun.sh/install | bash
-source ~/.bashrc
-bun --version
+cd /opt/alfa-reports
+docker compose up -d
+```
+
+#### 3.2 التحقق من حالة الحاوية
+
+```bash
+docker compose ps
+docker compose logs -f --tail=50
+```
+
+#### 3.3 فتح المنفذ في Firewall (إذا لزم)
+
+```bash
+ufw allow 3000/tcp
+```
+
+#### 3.4 اختبار الموقع
+
+افتح في المتصفح:
+```
+http://YOUR_VPS_IP:3000
+```
+
+يجب أن ترى صفحة بوابة تفعيل الكود.
+
+---
+
+### الخطوة 4: (اختياري) إعداد HTTPS عبر Traefik
+
+إذا أردت تشغيل الموقع على نطاق مثل `bot.scalper.com` بـ HTTPS تلقائي:
+
+#### 4.1 تثبيت Traefik
+
+```bash
+# إنشاء شبكة خارجية
+docker network create traefik-public
+
+# تشغيل Traefik مع Let's Encrypt
+docker run -d \
+  --name traefik \
+  --restart=unless-stopped \
+  --network traefik-public \
+  -p 80:80 \
+  -p 443:443 \
+  -p 8080:8080 \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v traefik-letsencrypt:/letsencrypt \
+  traefik:v3.1 \
+  --api.dashboard=true \
+  --providers.docker=true \
+  --providers.docker.exposedbydefault=false \
+  --entrypoints.http.address=:80 \
+  --entrypoints.https.address=:443 \
+  --certificatesresolvers.letsencrypt.acme.tlschallenge=true \
+  --certificatesresolvers.letsencrypt.acme.email=your-email@example.com \
+  --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+
+docker volume create traefik-letsencrypt
+```
+
+#### 4.2 توجيه DNS
+
+في إدارة DNS لنطاقك:
+- أضف سجل A: `bot` → `YOUR_VPS_IP`
+
+#### 4.3 تشغيل ALFA مع labels لـ Traefik
+
+استخدم ملف `docker-compose.yml` الكامل (الذي فيه labels) بدل المبسّط:
+
+```bash
+curl -o docker-compose.yml https://raw.githubusercontent.com/ali452158/ropot/main/docker-compose.yml
+# عدّل bot.scalper.com إلى نطاقك + YOUR_DOCKERHUB_USERNAME
+nano docker-compose.yml
+```
+
+ثم:
+```bash
+docker compose up -d
+```
+
+---
+
+## الطريقة B — VPS + docker compose يدويًا (لبناء على الـ VPS نفسه)
+
+> هذه الطريقة تتطلب VPS بـ 4GB RAM على الأقل (لبناء Next.js 16).
+
+### الخطوة 1: تثبيت Git + Docker على الـ VPS
+
+```bash
+apt update && apt install -y git curl
+curl -fsSL https://get.docker.com | sh
+systemctl enable docker && systemctl start docker
 ```
 
 ### الخطوة 2: استنساخ المشروع
 
 ```bash
 cd /opt
-git clone https://github.com/ali452158/ropot.git alfa
-cd alfa
+git clone https://github.com/ali452158/ropot.git alfa-reports
+cd alfa-reports
 ```
 
-### الخطوة 3: إعداد `.env`
+### الخطوة 3: إنشاء `.env`
 
 ```bash
 cp .env.example .env
-nano .env
-# املأ القيم كما في الطريقة A
+nano .env  # املأ القيم
 ```
 
-> ⚠️ **مهم:** في الطريقة B، اضبط مسار SQLite ليكون مطلقًا:
-> ```env
-> DATABASE_URL=file:/opt/alfa/db/custom.db
-> ```
-
-### الخطوة 4: تثبيت الحزم + توليد Prisma
+### الخطوة 4: البناء والتشغيل
 
 ```bash
-bun install
-```
-
-`postinstall` سيُشغّل `prisma generate` تلقائيًا.
-
-### الخطوة 5: بناء المشروع
-
-```bash
-bun run build
-```
-
-### الخطوة 6: دفع قاعدة البيانات (إنشاء الجداول)
-
-```bash
-bun run db:push
-```
-
-### الخطوة 7: تشغيل التطبيق
-
-```bash
-# تشغيل مباشر (سينقطع عند إغلاق التيرمنال)
-bun run start
-
-# تشغيل دائم عبر nohup
-nohup bun run start > server.log 2>&1 &
-echo $! > /tmp/alfa.pid
-
-# إيقافه لاحقًا
-kill $(cat /tmp/alfa.pid)
-```
-
-### الخطوة 8 (موصى به): تشغيل كـ service عبر systemd
-
-أنشئ ملف `/etc/systemd/system/alfa.service`:
-
-```ini
-[Unit]
-Description=ALFA Reports Next.js App
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/alfa
-EnvironmentFile=/opt/alfa/.env
-Environment=NODE_ENV=production
-Environment=PORT=3000
-Environment=HOSTNAME=0.0.0.0
-ExecStart=/root/.bun/bin/bun /opt/alfa/.next/standalone/server.js
-Restart=on-failure
-RestartSec=5
-StandardOutput=append:/opt/alfa/server.log
-StandardError=append:/opt/alfa/server.log
-
-[Install]
-WantedBy=multi-user.target
-```
-
-ثم فعّله:
-
-```bash
-systemctl daemon-reload
-systemctl enable alfa
-systemctl start alfa
-systemctl status alfa
+docker compose up -d --build
 ```
 
 ---
 
-## استكشاف الأخطاء الشائعة
+## استكشاف الأخطاء
 
-### 1) `unable to verify the first certificate`
+### المشكلة: `image not found` على Hostinger
 
-هذا خطأ SSL من MetaApi. الحل مدمج في الكود (`undici` مع `rejectUnauthorized: false`). إذا ظهر مجددًا، تأكد أن `undici` مثبت:
+**السبب:** نسيت تعديل `YOUR_DOCKERHUB_USERNAME` في `docker-compose.hostinger.yml`.
 
+**الحل:**
 ```bash
-# Docker
-docker compose exec alfa sh -c "ls node_modules/undici"
-
-# Bun
-ls /opt/alfa/node_modules/undici
+sed -i 's/YOUR_DOCKERHUB_USERNAME/ali452158/g' docker-compose.yml
+docker compose pull
+docker compose up -d
 ```
 
-### 2) `Can't reach database server`
+### المشكلة: `docker login` فشل
 
-- في Docker: تأكد أن volume `alfa_db` موجود (`docker volume ls`).
-- في Bun: تأكد أن المسار في `DATABASE_URL` مطلق ويشير إلى مجلد موجود.
+**الحل:**
+- تأكد من اسم المستخدم وكلمة المرور
+- إذا فعّلت 2FA على Docker Hub، استخدم Access Token بدلاً من كلمة المرور: https://hub.docker.com/settings/security
 
-### 3) البناء يفشل بسبب الذاكرة (OOM)
+### المشكلة: الحاوية تخرج فورًا بعد التشغيل
 
-خوادم 1 GB RAM قد تنفد ذاكرتها أثناء `next build`. الحل:
-
+**التشخيص:**
 ```bash
-# إضافة swap مؤقت
-fallocate -l 2G /swapfile
-chmod 600 /swapfile
-mkswap /swapfile
-swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
+docker compose logs --tail=50
 ```
 
-ثم أعد البناء.
+**الأسباب الشائعة:**
+- ملف `.env` ناقص أو فيه قيم placeholder (`your_metaapi_token_here`)
+- قاعدة البيانات لا يمكن إنشاؤها (تحقق من volume `/app/db`)
 
-### 4) المنفذ 3000 محجوب
+### المشكلة: الموقع لا يفتح على `http://VPS_IP:3000`
 
+**التشخيص:**
 ```bash
-# Hostinger firewall من اللوحة: Settings → Firewall → Add rule → TCP 3000
-# أو UFW:
+# داخل الـ VPS
+curl -I http://localhost:3000
+
+# من خارج الـ VPS (تأكد من فتح المنفذ)
+ufw status
 ufw allow 3000/tcp
 ```
 
-### 5) الحاوية تعيد التشغيل باستمرار
+### المشكلة: `npm ci` يفشل أثناء البناء
 
+**السبب:** `package-lock.json` لا يطابق `package.json`.
+
+**الحل:** السكربت يستخدم fallback تلقائيًا (`npm install --legacy-peer-deps`). لو فشل أيضًا:
 ```bash
-docker compose logs --tail=200 alfa
+rm package-lock.json
+docker build -t ali452158/alfa-reports:latest .
 ```
 
-أكثر الأسباب شيوعًا:
-- `META_API_TOKEN` فارغ أو غير صالح.
-- `DATABASE_URL` غير صحيح.
-- ملف `.env` غير محمّل (`docker compose` يقرأ `.env` افتراضيًا من نفس المجلد).
+### المشكلة: نفاد الذاكرة أثناء البناء (OOM)
 
-### 6) أريد إعادة إنشاء قاعدة البيانات من الصفر
-
-```bash
-# Docker
-docker compose exec alfa bunx prisma db push --accept-data-loss --force-reset
-
-# Bun
-cd /opt/alfa && bunx prisma db push --accept-data-loss --force-reset
+**الأعراض:**
+```
+FATAL ERROR: Ineffective mark-compactions near heap limit Allocation failed
 ```
 
-### 7) توليد أكواد تفعيل تجريبية
+**الحل:** Dockerfile فيه `NODE_OPTIONS=--max-old-space-size=4096`، لكن لو VPS جهازك صغير:
+- استخدم جهاز بـ 8GB RAM للبناء
+- أو ابنِ على Docker Hub عبر GitHub Actions (انظر القسم التالي)
+
+---
+
+## (متقدم) البناء التلقائي عبر GitHub Actions
+
+بدلاً من البناء على جهازك الشخصي، يمكنك جعل GitHub Actions يبني ويرفع الصورة تلقائيًا عند كل push.
+
+### الإعداد:
+
+1. اذهب إلى: https://hub.docker.com/settings/security
+2. أنشئ Access Token جديد
+3. اذهب إلى: https://github.com/ali452158/ropot/settings/secrets/actions
+4. أضف secrets:
+   - `DOCKERHUB_USERNAME` = اسم مستخدم Docker Hub
+   - `DOCKERHUB_TOKEN` = Access Token من الخطوة 2
+5. ارفع ملف `.github/workflows/docker-publish.yml` (يمكنك طلبه مني)
+
+عند كل push إلى `main`، GitHub Actions سيبني الصورة ويرفعها إلى Docker Hub تلقائيًا.
+
+---
+
+## ملخص سريع (Quick Start)
 
 ```bash
-# Docker
-docker compose exec alfa bun run scripts/generate-test-codes.ts
+# === على جهازك الشخصي ===
+git clone https://github.com/ali452158/ropot.git alfa-reports
+cd alfa-reports
+docker login
+./scripts/build-and-push.sh ali452158
 
-# Bun
-cd /opt/alfa && bun run scripts/generate-test-codes.ts
+# === على Hostinger VPS ===
+ssh root@YOUR_VPS_IP
+mkdir -p /opt/alfa && cd /opt/alfa
+curl -o docker-compose.yml https://raw.githubusercontent.com/ali452158/ropot/main/docker-compose.hostinger.yml
+sed -i 's/YOUR_DOCKERHUB_USERNAME/ali452158/g' docker-compose.yml
+nano .env  # اكتب المتغيرات (انظر .env.example)
+docker compose up -d
+
+# اختبار
+curl http://localhost:3000
 ```
 
 ---
 
-## ما بعد النشر
+## ملاحظات أمنية
 
-1. **افتح** `http://YOUR_VPS_IP:3000` (أو نطاقك).
-2. **أدخل كود التفعيل** التجريبي (يولّد عبر السكربت في الأعلى).
-3. **ادخل بيانات MT5**: ID + كلمة المرور + السيرفر.
-4. سيبدأ البوت التداول تلقائيًا على XAUUSD/M1 — راقب من لوحة التحكم.
-
----
-
-## ملخص سريع للأوامر (Docker)
-
-```bash
-# نشر أول مرة
-cd /opt && git clone https://github.com/ali452158/ropot.git alfa && cd alfa
-cp .env.example .env && nano .env
-docker compose up -d --build
-
-# إدارة يومية
-docker compose logs -f alfa        # لوجات
-docker compose restart alfa        # إعادة تشغيل
-docker compose down                # إيقاف
-git pull && docker compose up -d --build   # تحديث
-```
-
----
-
-## بيانات مهمة (احفظها)
-
-| العنصر | القيمة |
-|---|---|
-| Repo URL | `https://github.com/ali452158/ropot.git` |
-| المنفذ الافتراضي | `3000` |
-| مسار قاعدة البيانات (Docker) | volume `alfa_db` → `/app/db/custom.db` |
-| مسار قاعدة البيانات (Bun) | `/opt/alfa/db/custom.db` |
-| Endpoint فحص الصحة | `GET /api/system/mode` |
-| Endpoint التشخيص | `GET /api/system/diagnose` |
-| صورة الروبوت | `/alfa-robot.png` |
-
----
-
-أي مشكلة أخرى — شارك اللوج من `docker compose logs --tail=200 alfa` وسأساعدك.
+- 🔴 **بعد النشر:** احذف GitHub PAT من https://github.com/settings/tokens
+- 🔴 **لا ترفع `.env` إلى GitHub** (الملف `.gitignore` يستثنيه بالفعل)
+- 🟡 **استخدم HTTPS** قبل الإطلاق الرسمي (Traefik + Let's Encrypt)
+- 🟡 **غيّر `ADMIN_API_TOKEN`** إلى قيمة عشوائية جديدة خاصة بك
