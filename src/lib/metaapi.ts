@@ -22,28 +22,90 @@ const META_API_TOKEN = process.env.META_API_TOKEN || "";
 const SIMULATION = !META_API_TOKEN;
 
 /**
- * MetaAPI Cloud uses TWO separate REST API hosts:
+ * MetaAPI Cloud uses TWO separate REST API hosts (verified against the official
+ * metaapi.cloud-sdk v29.2.0 source code on npm):
  *
  *   1. Provisioning API  — create / list / delete MT5 accounts
- *      Default: mt-provisioning.cloud-trail.com
+ *      Correct host: mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai
+ *      (Note: NOT api.metaapi.cloud — that returns nginx 404. Also NOT
+ *       mt-provisioning.cloud-trail.com — that domain is dead / NXDOMAIN.)
  *
  *   2. Client API        — per-account operations (candles, prices, trades, positions)
- *      Default: mt-client-api-v1.new-york.agiliumtrade.ai
+ *      Pattern: mt-client-api-v1.{region}.{domain}
+ *      The {domain} portion is fetched DYNAMICALLY from the provisioning API
+ *      at /users/current/servers/mt-client-api (cached for 10 min). The SDK's
+ *      default base domain is agiliumtrade.agiliumtrade.ai, but the actual
+ *      runtime domain can change, so we fetch it dynamically.
  *      Region can be overridden via META_API_CLIENT_REGION (new-york | london | hong-kong).
  *
- * The OLD single-domain configuration (META_API_DOMAIN=agiliumtrade.agiliumtrade.ai)
- * is kept as a backward-compat fallback ONLY. That host is not a real MetaAPI
- * endpoint anymore (returns nginx 404 HTML) AND has an incomplete SSL chain.
+ * The OLD single-domain configuration (META_API_DOMAIN=...) is kept as a
+ * backward-compat fallback ONLY.
  */
 const META_API_PROVISIONING_DOMAIN =
   process.env.META_API_PROVISIONING_DOMAIN ||
-  "api.metaapi.cloud";
+  "mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
 
 const META_API_CLIENT_REGION =
   process.env.META_API_CLIENT_REGION || "new-york";
-const META_API_CLIENT_DOMAIN =
+
+// Static fallback only — the real client domain is fetched dynamically
+// from the provisioning API on first use (see getDynamicClientDomain()).
+const META_API_CLIENT_DOMAIN_FALLBACK =
   process.env.META_API_CLIENT_DOMAIN ||
   `mt-client-api-v1.${META_API_CLIENT_REGION}.agiliumtrade.ai`;
+
+// Dynamic client domain cache (refreshed every 10 min, mirroring official SDK).
+let dynamicClientDomain: string | null = null;
+let dynamicClientDomainLastUpdated = 0;
+let dynamicClientDomainFetchPromise: Promise<string | null> | null = null;
+const DYNAMIC_DOMAIN_TTL_MS = 10 * 60 * 1000;
+
+async function getDynamicClientDomain(): Promise<string | null> {
+  // Use cached value if fresh
+  if (
+    dynamicClientDomain &&
+    Date.now() - dynamicClientDomainLastUpdated < DYNAMIC_DOMAIN_TTL_MS
+  ) {
+    return dynamicClientDomain;
+  }
+  // Deduplicate concurrent fetches
+  if (dynamicClientDomainFetchPromise) {
+    return dynamicClientDomainFetchPromise;
+  }
+  dynamicClientDomainFetchPromise = (async () => {
+    try {
+      const res = await undiciFetch(
+        `https://${META_API_PROVISIONING_DOMAIN}/users/current/servers/mt-client-api`,
+        {
+          headers: { "auth-token": META_API_TOKEN },
+          dispatcher: permissiveDispatcher,
+        }
+      );
+      if (res.ok) {
+        const data: any = await res.json();
+        if (data?.domain) {
+          dynamicClientDomain = data.domain;
+          dynamicClientDomainLastUpdated = Date.now();
+          return dynamicClientDomain;
+        }
+      }
+    } catch {
+      // fall through to fallback
+    }
+    return null;
+  })().finally(() => {
+    dynamicClientDomainFetchPromise = null;
+  });
+  return dynamicClientDomainFetchPromise;
+}
+
+async function getClientDomain(): Promise<string> {
+  const dyn = await getDynamicClientDomain();
+  if (dyn) {
+    return `mt-client-api-v1.${META_API_CLIENT_REGION}.${dyn}`;
+  }
+  return META_API_CLIENT_DOMAIN_FALLBACK;
+}
 
 // Legacy single-domain override (kept for back-compat only).
 const META_API_LEGACY_DOMAIN = process.env.META_API_DOMAIN || "";
@@ -80,12 +142,16 @@ export const metaApiAgent = new https.Agent({
  *
  * Falls back to META_API_LEGACY_DOMAIN if it's explicitly set (back-compat
  * with older deployments that pinned a single domain).
+ *
+ * For "client" calls, the host is resolved DYNAMICALLY by querying the
+ * provisioning API for the current client-API domain (cached 10 min, mirroring
+ * the official metaapi.cloud-sdk behavior).
  */
-function pickHost(kind: "provision" | "client"): string {
+async function pickHost(kind: "provision" | "client"): Promise<string> {
   if (META_API_LEGACY_DOMAIN) return META_API_LEGACY_DOMAIN;
   return kind === "provision"
     ? META_API_PROVISIONING_DOMAIN
-    : META_API_CLIENT_DOMAIN;
+    : await getClientDomain();
 }
 
 /** Shared fetch wrapper: injects auth header + permissive TLS dispatcher. */
@@ -94,7 +160,7 @@ async function metaApiFetch(
   path: string,
   init: RequestInit & { method?: string } = {}
 ): Promise<Response> {
-  const host = pickHost(kind);
+  const host = await pickHost(kind);
   const headers: Record<string, string> = {
     "auth-token": META_API_TOKEN,
     ...(init.headers as Record<string, string> | undefined),
@@ -114,12 +180,14 @@ async function metaApiFetch(
 export function getMetaApiHosts(): {
   provisioning: string;
   client: string;
+  clientDynamic: string | null;
   legacy?: string;
   simulation: boolean;
 } {
   return {
     provisioning: META_API_PROVISIONING_DOMAIN,
-    client: META_API_CLIENT_DOMAIN,
+    client: META_API_CLIENT_DOMAIN_FALLBACK,
+    clientDynamic: dynamicClientDomain,
     ...(META_API_LEGACY_DOMAIN ? { legacy: META_API_LEGACY_DOMAIN } : {}),
     simulation: SIMULATION,
   };
