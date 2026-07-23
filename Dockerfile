@@ -2,9 +2,6 @@
 # ============================================================
 # ALFA Reports — Dockerfile (Next.js 16 standalone + Prisma)
 # Uses Node.js 22 for maximum compatibility with Next.js 16 build.
-# Bun caused build failures on Hostinger (Next.js 16 + Bun build
-# incompatibility + OOM during next build). Node.js is the runtime
-# that Vercel tests next build against.
 # ============================================================
 
 # ---------- Stage 1: deps ----------
@@ -73,18 +70,18 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
+# ============ Copy FULL node_modules from builder ============
+# Next.js standalone only bundles app deps. Prisma CLI needs its own
+# deps (effect, c12, deepmerge-ts, @prisma/config, etc.) which are
+# NOT included in standalone. Copying the full node_modules is the
+# safest way to ensure prisma db push works at runtime.
+COPY --from=builder /app/node_modules ./node_modules
+
 # ============ Prisma and database files ============
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
-
-# Also copy undici explicitly (required by MetaApi SSL fix)
-COPY --from=builder /app/node_modules/undici ./node_modules/undici
 
 EXPOSE 3000
 
-# Run migrations then start the standalone server (Node, not Bun)
-# Use node prisma/build/index.js directly to bypass npx PATH issues
-# in the standalone container (no node_modules/.bin in standalone)
+# Run migrations then start the standalone server
+# Use node prisma/build/index.js directly to bypass PATH issues
 CMD ["sh", "-c", "node ./node_modules/prisma/build/index.js db push --accept-data-loss --schema=./prisma/schema.prisma && node server.js"]
