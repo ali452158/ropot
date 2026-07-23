@@ -85,4 +85,6 @@ COPY --from=builder /app/node_modules/undici ./node_modules/undici
 EXPOSE 3000
 
 # Run migrations then start the standalone server (Node, not Bun)
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss --schema=./prisma/schema.prisma && node server.js"]
+# Use node prisma/build/index.js directly to bypass npx PATH issues
+# in the standalone container (no node_modules/.bin in standalone)
+CMD ["sh", "-c", "node ./node_modules/prisma/build/index.js db push --accept-data-loss --schema=./prisma/schema.prisma && node server.js"]
