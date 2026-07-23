@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentPrice, isSimulationMode } from "@/lib/metaapi";
-import { getSessionByToken } from "@/lib/session";
+import {
+  getCurrentPrice,
+  isSimulationMode,
+  getMasterLogin,
+  getCachedMasterMetaApiAccountId,
+} from "@/lib/metaapi";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,28 +12,30 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/market/price?symbol=XAUUSD[&sessionId=<token>]
  *
- * If sessionId is provided, market data is fetched through THAT subscriber's
- * own MetaAPI account. Otherwise we fall back to any cached account, and
- * finally to simulation mode.
+ * ARCHITECTURE: Price is ALWAYS fetched through the MASTER account
+ * (configured via META_API_MASTER_LOGIN). The `sessionId` parameter is
+ * accepted for backwards compatibility but IGNORED — market data is
+ * symbol-global and shared across all bot sessions.
  */
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get("symbol") || "XAUUSD";
-  const sessionToken = req.nextUrl.searchParams.get("sessionId") || "";
+  // sessionId accepted for back-compat but ignored — always uses master.
+  // const sessionToken = req.nextUrl.searchParams.get("sessionId") || "";
 
-  let mt5Login: string | undefined;
-  if (sessionToken) {
-    const session = await getSessionByToken(sessionToken);
-    if (session) mt5Login = session.mt5Login;
-  }
-
-  const tick = await getCurrentPrice(symbol, mt5Login);
+  const tick = await getCurrentPrice(symbol);
   if (!tick) {
     return NextResponse.json({ ok: false, error: "no price" }, { status: 502 });
   }
+  const masterLogin = getMasterLogin();
+  const masterId = getCachedMasterMetaApiAccountId();
   return NextResponse.json({
     ok: true,
     tick,
     mode: isSimulationMode() ? "SIMULATION" : "LIVE",
-    viaAccount: mt5Login || "any",
+    viaAccount: masterLogin
+      ? `master:${masterLogin}`
+      : masterId
+        ? `master:${masterId}`
+        : "any",
   });
 }

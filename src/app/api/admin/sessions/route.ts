@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { listActiveSessions, getActiveSessionCount } from "@/lib/bot-runner";
-import { listProvisionedLogins } from "@/lib/metaapi";
+import {
+  listProvisionedLogins,
+  getMasterLogin,
+  getCachedMasterMetaApiAccountId,
+} from "@/lib/metaapi";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,11 +57,24 @@ export async function GET(req: NextRequest) {
   // MT5 logins provisioned in MetaAPI (in-process cache, current worker only)
   const provisionedLogins = listProvisionedLogins();
 
+  // Master account info (market-data source)
+  const masterLogin = getMasterLogin();
+  const masterId = getCachedMasterMetaApiAccountId();
+  const masterAccount = masterLogin
+    ? {
+        login: masterLogin,
+        metaApiAccountId: masterId,
+        role: "MASTER",
+        note: "Used as the SOLE market-data source for all bot sessions",
+      }
+    : null;
+
   return NextResponse.json({
     ok: true,
     activeBotCount: getActiveSessionCount(),
     activeBots,
     recentSessions,
     provisionedLogins,
+    masterAccount,
   });
 }
