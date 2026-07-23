@@ -1,14 +1,10 @@
 # ============================================================
-# ALFA Reports — docker-compose.yml (Hostinger VPS + Traefik)
-# Domain: bot.scalper.com (HTTPS via Traefik Let's Encrypt)
+# ALFA Reports — docker-compose.yml (Hostinger VPS, no Traefik)
 # ============================================================
-# Prerequisite on the VPS:
-#   1. Install Traefik proxy (running on ports 80/443)
-#   2. Make sure Traefik is on the `traefik-public` network
-#   3. DNS for bot.scalper.com → your VPS IP
+# Standalone version — no Traefik proxy needed.
+# The container runs on port 3000 directly.
 #
-# If Traefik is NOT installed, comment out the traefik-public network
-# and all traefik.* labels below. The container will still run on port 3000.
+# For HTTPS/domain setup, see DEPLOY-HOSTINGER.md → Traefik section.
 # ============================================================
 
 services:
@@ -31,43 +27,12 @@ services:
       # Persist SQLite DB across container restarts
       - alfa_db:/app/db
     networks:
-      - traefik-public
       - alfa-net
-    labels:
-      # ====== Traefik routing for bot.scalper.com ======
-      - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-
-      # HTTP entrypoint (port 80) — used for ACME challenge + redirect to HTTPS
-      - "traefik.http.routers.alfa-http.rule=Host(`bot.scalper.com`)"
-      - "traefik.http.routers.alfa-http.entrypoints=http"
-      - "traefik.http.routers.alfa-http.middlewares=https-redirect@file"
-
-      # HTTPS entrypoint (port 443) — main router
-      - "traefik.http.routers.alfa.rule=Host(`bot.scalper.com`)"
-      - "traefik.http.routers.alfa.entrypoints=https"
-      - "traefik.http.routers.alfa.tls=true"
-      - "traefik.http.routers.alfa.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.alfa.service=alfa-svc"
-
-      # Service: forward to container port 3000
-      - "traefik.http.services.alfa-svc.loadbalancer.server.port=3000"
-      - "traefik.http.services.alfa-svc.loadbalancer.server.scheme=http"
-
-      # Middleware: HSTS + compression
-      - "traefik.http.middlewares.alfa-headers.headers.stsSeconds=31536000"
-      - "traefik.http.middlewares.alfa-headers.headers.stsIncludeSubdomains=true"
-      - "traefik.http.middlewares.alfa-headers.headers.forceSTSHeader=true"
-      - "traefik.http.routers.alfa.middlewares=alfa-headers@docker"
 
 volumes:
   alfa_db:
     driver: local
 
 networks:
-  # External network that Traefik listens on (must exist on the VPS)
-  # If Traefik is NOT installed, change `external: true` to `external: false`
-  traefik-public:
-    external: true
   alfa-net:
     driver: bridge
