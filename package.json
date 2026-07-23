@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && cp -r node_modules/.prisma .next/standalone/node_modules/ 2>/dev/null || true && cp -r node_modules/@prisma .next/standalone/node_modules/ 2>/dev/null || true && cp -r node_modules/undici .next/standalone/node_modules/ 2>/dev/null || true",
+    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && cp -r node_modules/.prisma .next/standalone/node_modules/ 2>/dev/null || true && cp -r node_modules/@prisma .next/standalone/node_modules/ 2>/dev/null || true && cp -r node_modules/undici .next/standalone/node_modules/ 2>/dev/null || true && cp -r node_modules/prisma .next/standalone/node_modules/ 2>/dev/null || true && mkdir -p .next/standalone/node_modules/.bin && ln -sf ../prisma/build/index.js .next/standalone/node_modules/.bin/prisma 2>/dev/null || true",
     "start": "NODE_ENV=production node .next/standalone/server.js 2>&1 | tee server.log",
     "start:prod": "npx prisma db push --accept-data-loss && NODE_ENV=production node .next/standalone/server.js",
     "lint": "eslint .",
