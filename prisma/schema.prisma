@@ -9,11 +9,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Activation codes - one per device, valid for 30 days
+// Activation codes - bound to a specific MT5 login (pre-provisioned in MetaApi dashboard)
 model ActivationCode {
   id              String   @id @default(cuid())
   code            String   @unique
   status          String   @default("UNUSED") // UNUSED, ACTIVE, EXPIRED, REVOKED
+  mt5Login        String?  // MT5 login this code is bound to (set at generation time)
   deviceFingerprint String? // null until first activation
   deviceInfo      String?  // user-agent / IP metadata
   activatedAt     DateTime?
@@ -28,6 +29,7 @@ model ActivationCode {
 
   @@index([code])
   @@index([status])
+  @@index([mt5Login])
 }
 
 // MT5 session - created after successful activation + MT5 login
