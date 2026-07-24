@@ -198,6 +198,107 @@ export async function getStrategy(strategyId: string): Promise<Strategy | null> 
   }
 }
 
+/**
+ * Create a new CopyFactory strategy bound to the master MetaApi account.
+ * POST /users/current/strategies
+ *
+ * Body schema (per CopyFactory REST API docs):
+ *   {
+ *     name: string,
+ *     description: string,
+ *     accountId: string,       // MetaApi account ID of the master
+ *     published: boolean,      // true = visible to external subscribers
+ *     symbols: ["*"],          // trade all symbols the master opens
+ *     ...extra: any
+ *   }
+ *
+ * Returns the created strategy ID, or null on failure.
+ */
+export async function createStrategy(params: {
+  name: string;
+  description?: string;
+  accountId: string; // master MetaApi account ID
+  accountLogin?: string;
+  published?: boolean;
+  riskOptions?: Record<string, unknown>;
+}): Promise<{ strategyId: string | null; error?: string; raw?: unknown }> {
+  if (SIMULATION) {
+    return {
+      strategyId: `sim-strategy-${Date.now()}`,
+      raw: { simulated: true },
+    };
+  }
+  try {
+    const body = {
+      name: params.name,
+      description: params.description || "ALFA Reports — automated gold trading strategy",
+      accountId: params.accountId,
+      accountLogin: params.accountLogin ? String(params.accountLogin) : undefined,
+      platform: "mt5",
+      published: params.published !== false, // default true
+      symbols: ["*"], // copy all symbols the master opens
+      // Default risk management — let subscribers override on their side.
+      riskOptions: params.riskOptions || {
+        maxDailyDrawdown: 0.2, // 20% of subscriber equity
+        maxOverallDrawdown: 0.3, // 30% of subscriber equity
+        maxTradeRisk: 0.05, // 5% of equity per trade
+      },
+    };
+
+    const res = await cfFetch(`/users/current/strategies`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return {
+        strategyId: null,
+        error: `CopyFactory API ${res.status}: ${txt || res.statusText}`,
+        raw: { status: res.status, body: txt },
+      };
+    }
+
+    // CopyFactory returns 201 Created with the strategy ID in the body.
+    const data: any = await res.json().catch(() => ({}));
+    const strategyId = data._id || data.id || data.strategyId;
+    if (!strategyId) {
+      return {
+        strategyId: null,
+        error: "CopyFactory created the strategy but no ID was returned",
+        raw: data,
+      };
+    }
+    return { strategyId, raw: data };
+  } catch (e: any) {
+    return { strategyId: null, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Update the published status of a strategy.
+ * PUT /users/current/strategies/{strategyId}
+ */
+export async function updateStrategy(
+  strategyId: string,
+  updates: { name?: string; description?: string; published?: boolean }
+): Promise<{ ok: boolean; error?: string }> {
+  if (SIMULATION) return { ok: true };
+  try {
+    const res = await cfFetch(`/users/current/strategies/${strategyId}`, {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return { ok: false, error: `${res.status}: ${txt}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 // ============================================================
 // SUBSCRIBER VERIFICATION (bot side — read-only)
 // ============================================================

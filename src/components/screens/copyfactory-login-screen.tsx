@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "@/lib/store";
 import { AlfaLogo, AlfaWordmark } from "@/components/alfa-logo";
@@ -22,6 +22,7 @@ import {
   LogOut,
   HelpCircle,
   LogIn,
+  KeyRound,
 } from "lucide-react";
 
 export function CopyfactoryLoginScreen() {
@@ -30,7 +31,60 @@ export function CopyfactoryLoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showHelp, setShowHelp] = useState(false);
+  const [strategyInfo, setStrategyInfo] = useState<{
+    strategyId?: string;
+    masterLogin?: string | null;
+    strategyExists?: boolean;
+    requiresActivation?: boolean;
+  } | null>(null);
+  const [strategyLoading, setStrategyLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
   const { toast } = useToast();
+
+  // Fetch the Strategy ID + master info on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setStrategyLoading(true);
+      try {
+        const res = await fetch(
+          `/api/copyfactory/strategy-info?code=${encodeURIComponent(
+            activation.code
+          )}`,
+          { cache: "no-store" }
+        );
+        const data = await res.json();
+        if (!cancelled) setStrategyInfo(data);
+      } catch (e) {
+        if (!cancelled)
+          setStrategyInfo({
+            strategyExists: false,
+            requiresActivation: true,
+          });
+      } finally {
+        if (!cancelled) setStrategyLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activation.code]);
+
+  const copyStrategyId = async () => {
+    if (!strategyInfo?.strategyId) return;
+    try {
+      await navigator.clipboard.writeText(strategyInfo.strategyId);
+      setCopied(true);
+      toast({ title: "تم النسخ ✓", description: "Strategy ID منسوخ إلى الحافظة" });
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({
+        title: "تعذر النسخ",
+        description: "انسخ الـ ID يدوياً",
+        variant: "destructive",
+      });
+    }
+  };
 
   const handleBack = () => {
     if (typeof window !== "undefined") {
@@ -151,10 +205,66 @@ export function CopyfactoryLoginScreen() {
             </div>
 
             <p className="text-sm text-cyan-200/70 mb-5 leading-relaxed">
-              أدخل CopyFactory Subscriber ID الخاص بك لربط حسابك بالاستراتيجية
+              ادخل CopyFactory Subscriber ID الخاص بك لربط حسابك بالاستراتيجية
               الذهبية. سيقوم البوت تلقائياً بنسخ صفقات الماستر إلى حسابك دون
               الحاجة لمشاركة كلمة مرور MT5.
             </p>
+
+            {/* Strategy ID panel — prominently displayed for subscriber setup */}
+            <div className="mb-5 p-4 rounded-lg bg-gradient-to-br from-cyan-500/10 to-blue-500/10 border border-cyan-500/30">
+              <div className="flex items-center gap-2 mb-2">
+                <KeyRound className="w-4 h-4 text-cyan-400" />
+                <span className="text-xs font-bold text-cyan-200 uppercase tracking-wider">
+                  Master Strategy ID
+                </span>
+              </div>
+              {strategyLoading ? (
+                <div className="flex items-center gap-2 text-cyan-300/60 text-sm">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  جاري التحميل...
+                </div>
+              ) : strategyInfo?.strategyId ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <code
+                      dir="ltr"
+                      className="flex-1 font-mono text-xs text-cyan-100 bg-black/40 px-3 py-2 rounded border border-cyan-500/30 break-all"
+                    >
+                      {strategyInfo.strategyId}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={copyStrategyId}
+                      title="نسخ"
+                      className="shrink-0 p-2 rounded border border-cyan-500/40 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 hover:border-cyan-400 transition-colors"
+                    >
+                      {copied ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                  {strategyInfo.masterLogin && (
+                    <div className="mt-2 text-[11px] text-cyan-300/60">
+                      Master MT5 Login:{" "}
+                      <span className="font-mono text-cyan-200">
+                        {strategyInfo.masterLogin}
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : strategyInfo?.requiresActivation ? (
+                <p className="text-xs text-yellow-300/80">
+                  أدخل كود التفعيل أولاً للحصول على Strategy ID. إذا وصلت لهذه
+                  الشاشة بعد التفعيل، تواصل مع الأدمن.
+                </p>
+              ) : (
+                <p className="text-xs text-yellow-300/80">
+                  الاستراتيجية غير مفعّلة بعد. تواصل مع الأدمن لنشر Strategy ID.
+                </p>
+              )}
+            </div>
 
             {/* Steps summary */}
             <div className="space-y-2 mb-5 p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20">
@@ -179,7 +289,14 @@ export function CopyfactoryLoginScreen() {
               </div>
               <div className="flex items-start gap-2 text-xs text-cyan-200/80">
                 <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-green-400" />
-                <span>أنشأت CopyFactory Subscriber ونسخت الـ ID</span>
+                <span>
+                  أنشأت CopyFactory Subscriber والصقت الـ Strategy ID أعلاه في
+                  خانة Strategy ID
+                </span>
+              </div>
+              <div className="flex items-start gap-2 text-xs text-cyan-200/80">
+                <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-green-400" />
+                <span>نسخت الـ Subscriber ID من MetaApi dashboard</span>
               </div>
             </div>
 
@@ -249,7 +366,13 @@ export function CopyfactoryLoginScreen() {
                   </div>
                   <div>
                     <strong className="text-blue-300">4.</strong> في خانة
-                    Strategy ID، الصق الـ ID الذي حصلت عليه من الأدمن
+                    Strategy ID، الصق الـ ID الظاهر في الأعلى
+                    {strategyInfo?.strategyId && (
+                      <span className="text-cyan-300 font-mono">
+                        {" "}
+                        ({strategyInfo.strategyId.slice(0, 16)}...)
+                      </span>
+                    )}
                   </div>
                   <div>
                     <strong className="text-blue-300">5.</strong> احفظ → انسخ
