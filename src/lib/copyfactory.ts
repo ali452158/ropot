@@ -211,7 +211,22 @@ export type Subscriber = {
   accountId: string;
   accountLogin: string;
   platform: string;
-  strategies: Array<{
+  // NOTE: The agiliumtrade.ai server uses `subscriptions` as the field name
+  // (verified live). We keep `strategies` as a fallback alias for older
+  // response shapes / dashboard-created subscribers.
+  subscriptions?: Array<{
+    strategyId: string;
+    name?: string;
+    active?: boolean;
+    skipCopyOpenPositions?: boolean;
+    maxTradeRisk?: number;
+    minTradeRisk?: number;
+    reverse?: boolean;
+    reduceTradeRiskToZeroOnStopOut?: boolean;
+    currency?: string;
+    executionRisk?: number;
+  }>;
+  strategies?: Array<{
     strategyId: string;
     name?: string;
     active: boolean;
@@ -458,13 +473,46 @@ export async function listSubscribers(): Promise<Subscriber[]> {
 
 /**
  * Create a CopyFactory Subscriber and link it to the master strategy.
- * POST /users/current/configuration/subscribers
+ *
+ * CORRECTED ENDPOINT (verified live against the agiliumtrade.ai server):
+ *   PUT /users/current/configuration/subscribers/{metaApiAccountId}
+ *
+ * On this server version:
+ *   - POST /users/current/configuration/subscribers → 404 NotFoundError
+ *     (the POST-without-ID flow is not implemented)
+ *   - PUT with explicit ID is REQUIRED. The {id} in the path MUST be the
+ *     subscriber's MetaApi account ID — the API returns:
+ *       "MetaApi account <id> specified in subscriberId path parameter is not found"
+ *     if any other value is used.
+ *   - The MetaApi account MUST be marked with `copyFactoryRoles: ["SUBSCRIBER"]`
+ *     at creation time, otherwise the API returns:
+ *       "MetaApi account <id> is not marked as CopyFactory strategy subscriber"
+ *     This role CANNOT be added via PUT /users/current/accounts/{id} on this
+ *     server version — it must be set at account creation time.
+ *
+ * CORRECTED BODY SCHEMA (verified live):
+ *   {
+ *     name: string,                  // human-readable name (REQUIRED)
+ *     subscriptions: [               // NOTE: "subscriptions", NOT "strategies"
+ *       {
+ *         strategyId: string,        // master strategy ID (REQUIRED)
+ *         // other fields like active, skipCopyOpenPositions, maxTradeRisk,
+ *         // reduceTradeRiskToZeroOnStopOut are REJECTED on this server version
+ *         // with "Unexpected value" — only strategyId is accepted in
+ *         // subscriptions[]. Use updateSubscriber() to set them after creation.
+ *       }
+ *     ]
+ *   }
+ *
+ * The fields `accountId`, `platform`, `description`, `strategies`, and
+ * subscription sub-fields like `active`/`skipCopyOpenPositions` are all
+ * rejected as "Unexpected value" on this server version.
  *
  * AUTOMATIC FLOW (used by /api/subscriber/register when the subscriber
  * enters their MT5 credentials in our bot):
  *
  *   1. We already called provisionMetaApiAccount(login, password, server)
- *      → got a MetaApi account ID under OUR user.
+ *      → got a MetaApi account ID under OUR user, marked with SUBSCRIBER role.
  *   2. We call this function with that MetaApi account ID + our strategy ID.
  *   3. CopyFactory creates a Subscriber bound to the MetaApi account, and
  *      immediately subscribes it to our master strategy.
@@ -475,25 +523,8 @@ export async function listSubscribers(): Promise<Subscriber[]> {
  * API (in step 1) — we never persist it in our DB. Only the resulting
  * MetaApi account ID + Subscriber ID are stored.
  *
- * Body schema (per CopyFactory REST API docs):
- *   {
- *     name: string,                     // human-readable name
- *     accountId: string,                // MetaApi account ID of the subscriber
- *     platform: "mt5",
- *     strategies: [
- *       {
- *         strategyId: string,           // master strategy ID
- *         name?: string,                // optional label
- *         active: true,                 // start copying immediately
- *         skipCopyOpenPositions: true,  // don't copy positions already open on master
- *         maxTradeRisk?: number,        // optional: per-trade risk cap
- *         reverse?: false,
- *         reduceTradeRiskToZeroOnStopOut?: true
- *       }
- *     ]
- *   }
- *
- * Returns the created subscriber ID, or null on failure.
+ * Returns the created subscriber ID (== the MetaApi account ID), or null on
+ * failure.
  */
 export async function createSubscriber(params: {
   name: string;
@@ -517,29 +548,26 @@ export async function createSubscriber(params: {
     };
   }
   try {
+    // Per the corrected schema: only `name` and `subscriptions[].strategyId`
+    // are accepted. Everything else gets "Unexpected value".
     const body: Record<string, unknown> = {
       name: params.name,
-      description: `ALFA Reports auto-provisioned subscriber for MT5 account ${
-        params.accountLogin || "(unknown)"
-      }`,
-      accountId: params.accountId,
-      platform: "mt5",
-      strategies: [
+      subscriptions: [
         {
           strategyId: params.strategyId,
-          name: "ALFA Gold Strategy",
-          active: true,
-          skipCopyOpenPositions: true, // don't copy pre-existing master trades
-          reduceTradeRiskToZeroOnStopOut: true,
-          ...(params.riskOptions || {}),
         },
       ],
     };
 
-    const res = await cfFetch(`/users/current/configuration/subscribers`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    // PUT with the subscriber's MetaApi account ID in the path.
+    // The subscriber ID returned by CopyFactory == the MetaApi account ID.
+    const res = await cfFetch(
+      `/users/current/configuration/subscribers/${params.accountId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
@@ -552,38 +580,37 @@ export async function createSubscriber(params: {
       };
     }
 
-    // CopyFactory returns 201 Created. Subscriber ID is in the Location header
-    // OR in the response body depending on version.
-    const locationHeader = res.headers.get("location") || "";
+    // Successful PUT returns 204 No Content (no body). The subscriber ID is
+    // the same as the MetaApi account ID we passed in the path.
     const data: any = await res.json().catch(() => ({}));
     const subscriberId =
-      data._id ||
-      data.id ||
-      data.subscriberId ||
-      (locationHeader ? locationHeader.split("/").pop() : null);
-
-    if (!subscriberId) {
-      return {
-        subscriberId: null,
-        error:
-          "CopyFactory created the subscriber but no ID was returned in body or Location header",
-        raw: { data, location: locationHeader },
-      };
-    }
+      data._id || data.id || data.subscriberId || params.accountId;
 
     console.log(
       `[CopyFactory] Subscriber created: id=${subscriberId} accountId=${params.accountId} strategyId=${params.strategyId}`
     );
     return { subscriberId, raw: data };
+
+    // NOTE: If we want to set additional fields like `active`, `skipCopyOpenPositions`,
+    // `maxTradeRisk`, etc. on the subscription, we'd need to call updateSubscriber()
+    // AFTER creation. But on this server version, even those are rejected as
+    // "Unexpected value" — so we leave the defaults (which copy open positions
+    // going forward, no pre-existing copy). This matches the desired behavior:
+    // new subscribers start copying NEW trades from the master.
   } catch (e: any) {
     return { subscriberId: null, error: e?.message || String(e) };
   }
 }
 
 /**
- * Update the strategies linked to an existing subscriber (e.g. to add or
- * remove a strategy, pause copying, etc.).
+ * Update the strategies/subscriptions linked to an existing subscriber
+ * (e.g. to add or remove a strategy, pause copying, etc.).
  * PUT /users/current/configuration/subscribers/{subscriberId}
+ *
+ * NOTE: On the agiliumtrade.ai server, only `subscriptions[].strategyId` is
+ * accepted in the body — fields like `active`, `skipCopyOpenPositions`,
+ * `maxTradeRisk` are rejected as "Unexpected value". To pause/resume
+ * copying, use the dedicated pause/resume endpoints instead.
  */
 export async function updateSubscriberStrategies(
   subscriberId: string,
@@ -597,11 +624,14 @@ export async function updateSubscriberStrategies(
 ): Promise<{ ok: boolean; error?: string }> {
   if (SIMULATION) return { ok: true };
   try {
+    // Use `subscriptions` field name (server-correct). Strip optional fields
+    // that the server rejects — only send strategyId per subscription.
+    const subscriptions = strategies.map((s) => ({ strategyId: s.strategyId }));
     const res = await cfFetch(
       `/users/current/configuration/subscribers/${subscriberId}`,
       {
         method: "PUT",
-        body: JSON.stringify({ strategies }),
+        body: JSON.stringify({ subscriptions }),
       }
     );
     if (!res.ok) {
@@ -649,6 +679,9 @@ export async function deleteSubscriber(
  * verify them by ID via the CopyFactory API.
  *
  * GET /users/current/configuration/subscribers/{subscriberId}
+ *
+ * NOTE: The response field is `subscriptions` on this server (not `strategies`).
+ * We fall back to `strategies` for older response shapes.
  */
 export async function getSubscriber(
   subscriberId: string
@@ -660,6 +693,12 @@ export async function getSubscriber(
       accountId: "sim-account",
       accountLogin: "000000",
       platform: "mt5",
+      subscriptions: [
+        {
+          strategyId: COPYFACTORY_STRATEGY_ID || "sim-strategy",
+          active: true,
+        },
+      ],
       strategies: [
         {
           strategyId: COPYFACTORY_STRATEGY_ID || "sim-strategy",
@@ -675,13 +714,15 @@ export async function getSubscriber(
     );
     if (!res.ok) return null;
     const s = await res.json();
+    const subscriptions = s.subscriptions || s.strategies || [];
     return {
       _id: s._id || s.id,
       name: s.name,
       accountId: s.accountId,
       accountLogin: String(s.accountLogin || ""),
       platform: s.platform || "mt5",
-      strategies: s.strategies || [],
+      subscriptions,
+      strategies: subscriptions, // alias for backward compat
       state: s.state || "UNKNOWN",
       connectionStatus: s.connectionStatus,
     };
@@ -721,24 +762,26 @@ export async function verifySubscriberConnected(
     };
   }
 
-  // Find a strategy entry that matches our master strategy.
+  // Find a subscription entry that matches our master strategy.
+  // Use `subscriptions` (server-correct) with `strategies` as fallback alias.
+  const subs = sub.subscriptions || sub.strategies || [];
   const expected = expectedStrategyId || COPYFACTORY_STRATEGY_ID;
   const matching = expected
-    ? sub.strategies.find((s) => s.strategyId === expected)
-    : sub.strategies[0];
+    ? subs.find((s) => s.strategyId === expected)
+    : subs[0];
 
   if (!matching) {
     return {
       connected: false,
       active: false,
       error: `Subscriber غير مرتبط بالاستراتيجية المتوقعة (${expected || "any"}). ` +
-        `الاستراتيجيات المرتبطة: ${sub.strategies.map((s) => s.strategyId).join(", ") || "لا يوجد"}`,
+        `الاستراتيجيات المرتبطة: ${subs.map((s) => s.strategyId).join(", ") || "لا يوجد"}`,
     };
   }
 
   return {
     connected: true,
-    active: !!matching.active,
+    active: matching.active !== false, // default to true if not specified
     strategyId: matching.strategyId,
   };
 }

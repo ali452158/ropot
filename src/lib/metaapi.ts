@@ -279,6 +279,7 @@ export async function listMetaApiAccounts(): Promise<
     connectionStatus: string;
     region?: string;
     name?: string;
+    copyFactoryRoles?: string[];
   }>
 > {
   if (SIMULATION) return [];
@@ -295,6 +296,7 @@ export async function listMetaApiAccounts(): Promise<
       connectionStatus: a.connectionStatus,
       region: a.region,
       name: a.name,
+      copyFactoryRoles: Array.isArray(a.copyFactoryRoles) ? a.copyFactoryRoles : [],
     }));
   } catch {
     return [];
@@ -305,22 +307,78 @@ export async function listMetaApiAccounts(): Promise<
  * Find an existing MetaApi account by MT5 login (and optionally server).
  * Useful when the token doesn't have createAccount permission (free MetaApi
  * tier, or read-only token) but the account was already provisioned before.
+ *
+ * Returns the account ID plus the copyFactoryRoles so the caller can verify
+ * the SUBSCRIBER role is set (required for CopyFactory subscriber creation).
  */
 export async function findExistingMetaApiAccount(
   mt5Login: string
-): Promise<string | null> {
+): Promise<{ id: string; copyFactoryRoles: string[] } | null> {
   if (SIMULATION) return null;
-  // Check in-process cache first
-  const cached = accountCache.get(mt5Login);
-  if (cached) return cached;
-  // Otherwise query the API
+  // Check in-process cache first (cache hit doesn't include role info — query API)
+  // We always query the API now because we need fresh role information.
   const accounts = await listMetaApiAccounts();
   const match = accounts.find((a) => a.login === String(mt5Login));
   if (match) {
     accountCache.set(mt5Login, match.id);
-    return match.id;
+    return {
+      id: match.id,
+      copyFactoryRoles: match.copyFactoryRoles || [],
+    };
   }
   return null;
+}
+
+/**
+ * Undeploy a MetaApi account by its ID. Required before DELETE — the API
+ * refuses to delete a DEPLOYED account.
+ */
+export async function undeployMetaApiAccount(
+  metaApiAccountId: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (SIMULATION) return { ok: true };
+  try {
+    const res = await metaApiFetch(
+      "provision",
+      `/users/current/accounts/${metaApiAccountId}/undeploy`,
+      { method: "POST" }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: `Undeploy failed: ${res.status} ${text}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Wait for an account to reach a target state (e.g. UNDEPLOYED after undeploy).
+ * Polls every 2s up to ~60s.
+ */
+export async function waitForAccountState(
+  metaApiAccountId: string,
+  targetState: string,
+  maxAttempts = 30
+): Promise<boolean> {
+  if (SIMULATION) return true;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const res = await metaApiFetch(
+        "provision",
+        `/users/current/accounts/${metaApiAccountId}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.state === targetState) return true;
+      }
+    } catch {
+      // ignore
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return false;
 }
 
 /**
@@ -371,19 +429,71 @@ export async function provisionMetaApiAccount(
   //   (a) Token has read-only permissions (no createAccount method).
   //   (b) Account was provisioned in a previous run / from the dashboard.
   //   (c) Free-tier MetaApi plan that has hit its account quota.
-  const existingId = await findExistingMetaApiAccount(mt5Login);
-  if (existingId) {
-    accountCache.set(mt5Login, existingId);
-    return { metaApiAccountId: existingId };
+  //
+  // CRITICAL: We also check that the existing account has the SUBSCRIBER role.
+  // CopyFactory's PUT /users/current/configuration/subscribers/{id} endpoint
+  // refuses to create a subscriber if the underlying MetaApi account is not
+  // marked with copyFactoryRoles: ["SUBSCRIBER"]. This role can ONLY be set
+  // at account creation time — the PUT /users/current/accounts/{id} endpoint
+  // rejects `copyFactoryRoles` as "Unexpected value" on this server version.
+  //
+  // Migration strategy: if an existing account is missing the SUBSCRIBER role,
+  // we undeploy + delete it and create a fresh one with the role. The user's
+  // MT5 password (re-entered at login) is used to re-create the account.
+  const existing = await findExistingMetaApiAccount(mt5Login);
+  if (existing) {
+    if (existing.copyFactoryRoles?.includes("SUBSCRIBER")) {
+      accountCache.set(mt5Login, existing.id);
+      return { metaApiAccountId: existing.id };
+    }
+
+    // Existing account is missing SUBSCRIBER role — migrate it.
+    console.log(
+      `[metaapi] Existing account ${existing.id} for login=${mt5Login} is missing SUBSCRIBER role (roles=${JSON.stringify(
+        existing.copyFactoryRoles
+      )}). Migrating: undeploy → delete → re-create with role.`
+    );
+
+    // Undeploy first (DELETE refuses DEPLOYED accounts).
+    const undeploy = await undeployMetaApiAccount(existing.id);
+    if (!undeploy.ok) {
+      console.warn(
+        `[metaapi] Undeploy failed for ${existing.id}: ${undeploy.error}. ` +
+          `Attempting delete anyway.`
+      );
+    }
+    // Wait briefly for state transition (best-effort, ~10s).
+    await waitForAccountState(existing.id, "UNDEPLOYED", 5);
+
+    // Delete the old account.
+    const del = await deleteMetaApiAccount(existing.id);
+    if (!del.ok) {
+      console.warn(
+        `[metaapi] Delete failed for ${existing.id}: ${del.error}. ` +
+          `Will attempt to create a new account anyway (may fail if quota is full).`
+      );
+    } else {
+      console.log(
+        `[metaapi] Deleted old account ${existing.id}. Waiting 3s before re-create...`
+      );
+      // Brief pause to let the deletion propagate on the server side.
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    // Fall through to create a fresh account with the SUBSCRIBER role.
   }
 
-  // STEP 2: Try to create a new account.
+  // STEP 2: Try to create a new account WITH copyFactoryRoles: ["SUBSCRIBER"].
+  // This role is REQUIRED for CopyFactory subscriber creation — it cannot be
+  // added via PUT /users/current/accounts/{id} on the current API version.
+  //
   // Updated payload based on NewMetatraderAccountDto schema (verified against
   // metaapi.cloud-sdk v29.2.0):
   //   - `server` (NOT `serverName`) — text name of the broker server
   //   - `name` — required human-readable account name
   //   - `type: "cloud-g2"` — newer/faster/cheaper than legacy "cloud"
   //   - `platform: "mt5"` — explicit MT5 platform
+  //   - `magic` — REQUIRED field (integer), used to identify bot trades
+  //   - `copyFactoryRoles: ["SUBSCRIBER"]` — marks account as CopyFactory subscriber
   try {
     const res = await metaApiFetch("provision", `/users/current/accounts`, {
       method: "POST",
@@ -396,6 +506,7 @@ export async function provisionMetaApiAccount(
         platform: "mt5",
         application: "ALFA-Reports",
         magic: 770077,
+        copyFactoryRoles: ["SUBSCRIBER"],
       }),
     });
     if (!res.ok) {
@@ -547,13 +658,15 @@ export async function getMasterMetaApiAccountId(): Promise<string | null> {
   masterResolutionPromise = (async () => {
     // 1) If a master login is configured, look it up in the provisioning API.
     if (META_API_MASTER_LOGIN) {
-      const id = await findExistingMetaApiAccount(META_API_MASTER_LOGIN);
-      if (id) {
-        masterMetaApiAccountId = id;
+      const existing = await findExistingMetaApiAccount(META_API_MASTER_LOGIN);
+      if (existing) {
+        masterMetaApiAccountId = existing.id;
         console.log(
-          `[MetaApi] Master account resolved: login=${META_API_MASTER_LOGIN} metaApiAccountId=${id}`
+          `[MetaApi] Master account resolved: login=${META_API_MASTER_LOGIN} metaApiAccountId=${existing.id} copyFactoryRoles=${JSON.stringify(
+            existing.copyFactoryRoles
+          )}`
         );
-        return id;
+        return existing.id;
       }
       console.warn(
         `[MetaApi] Master login ${META_API_MASTER_LOGIN} not found in provisioning API. ` +
