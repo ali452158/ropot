@@ -400,7 +400,25 @@ export async function provisionMetaApiAccount(
     });
     if (!res.ok) {
       const text = await res.text();
-      // Friendly error for the most common permission failure
+      // 401 = token is missing the metaapi-provisioning-api permission entirely.
+      // The provisioning API (mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai)
+      // requires the "metaapi-provisioning-api" access rule with role "writer".
+      // Without it, EVERY call to /users/current/accounts returns 401, even GET.
+      if (res.status === 401) {
+        return {
+          metaApiAccountId: "",
+          error:
+            `MetaApi رفض التوكن (401 Unauthorized). ` +
+            `السبب: التوكن الحالي لا يملك صلاحية "metaapi-provisioning-api" ` +
+            `اللازمة لإنشاء/سرد/حذف حسابات MetaApi. ` +
+            `الحل: (1) افتح app.metaapi.cloud → Settings → API tokens، ` +
+            `(2) عدّل التوكن الحالي أو أنشئ توكن جديد، ` +
+            `(3) فعّل صلاحية "Provisioning API" مع دور "writer" على كل الموارد، ` +
+            `(4) حدّث META_API_TOKEN في ملف .env على السيرفر وأعد التشغيل. ` +
+            `تفاصيل الخطأ الأصلي: ${text}`,
+        };
+      }
+      // 403 = token has the provisioning permission but quota/role blocked the create.
       if (res.status === 403) {
         return {
           metaApiAccountId: "",
@@ -772,4 +790,142 @@ export function isSimulationMode(): boolean {
 
 export function getMode(): "LIVE" | "SIMULATION" {
   return SIMULATION ? "SIMULATION" : "LIVE";
+}
+
+// --------- Token diagnostics ---------
+
+/**
+ * Decode the META_API_TOKEN JWT WITHOUT verifying the signature (we trust the
+ * source — the operator pasted it from the MetaApi dashboard). Returns the
+ * list of accessRules + a few derived booleans that the UI/admin can use to
+ * quickly answer "is this token good enough for auto-provisioning?".
+ */
+export function inspectMetaApiToken(): {
+  present: boolean;
+  tokenPreview: string;
+  tokenId?: string;
+  realUserId?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  expired?: boolean;
+  accessRules: Array<{
+    id: string;
+    methods: string[];
+    roles: string[];
+    resources: string[];
+    scope: "ALL" | "LIMITED";
+  }>;
+  permissions: {
+    provisioningApi: boolean; // metaapi-provisioning-api (create/list/delete accounts)
+    provisioningApiAll: boolean; // ... on ALL resources (not just one account)
+    copyfactoryApi: boolean;
+    copyfactoryApiAll: boolean;
+    mtManagerApi: boolean;
+    mtManagerApiAll: boolean;
+    metaapiRestApi: boolean;
+    metaapiRestApiAll: boolean;
+    metastatsApi: boolean;
+  };
+  canAutoProvision: boolean; // true iff provisioningApi writer on ALL accounts
+  canUseCopyFactory: boolean; // true iff copyfactoryApi writer on ALL resources
+} {
+  const t = META_API_TOKEN;
+  if (!t) {
+    return {
+      present: false,
+      tokenPreview: "",
+      accessRules: [],
+      permissions: {
+        provisioningApi: false,
+        provisioningApiAll: false,
+        copyfactoryApi: false,
+        copyfactoryApiAll: false,
+        mtManagerApi: false,
+        mtManagerApiAll: false,
+        metaapiRestApi: false,
+        metaapiRestApiAll: false,
+        metastatsApi: false,
+      },
+      canAutoProvision: false,
+      canUseCopyFactory: false,
+    };
+  }
+  const parts = t.split(".");
+  let payload: any = {};
+  try {
+    if (parts.length >= 2) {
+      const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+      payload = JSON.parse(
+        Buffer.from(padded, "base64").toString("utf8")
+      );
+    }
+  } catch {
+    /* ignore decode errors */
+  }
+  const rules = Array.isArray(payload.accessRules) ? payload.accessRules : [];
+  const accessRules = rules.map((r: any) => {
+    const resources: string[] = Array.isArray(r.resources) ? r.resources : [];
+    const isAll = resources.some(
+      (s) =>
+        typeof s === "string" &&
+        (s === "*:$USER_ID$:*" ||
+          s === "*" ||
+          s.startsWith("*:$USER_ID$"))
+    );
+    return {
+      id: r.id || "",
+      methods: Array.isArray(r.methods) ? r.methods : [],
+      roles: Array.isArray(r.roles) ? r.roles : [],
+      resources,
+      scope: (isAll ? "ALL" : "LIMITED") as "ALL" | "LIMITED",
+    };
+  });
+  const has = (id: string) => accessRules.find((r) => r.id === id);
+  const hasAll = (id: string) => {
+    const r = has(id);
+    return !!r && r.scope === "ALL" && r.roles.includes("writer");
+  };
+  const provisioningApi = !!has("metaapi-provisioning-api");
+  const provisioningApiAll = hasAll("metaapi-provisioning-api");
+  const copyfactoryApi = !!has("copyfactory-api");
+  const copyfactoryApiAll = hasAll("copyfactory-api");
+  const mtManagerApi = !!has("mt-manager-api");
+  const mtManagerApiAll = hasAll("mt-manager-api");
+  const metaapiRestApi = !!has("metaapi-rest-api");
+  const metaapiRestApiAll = hasAll("metaapi-rest-api");
+  const metastatsApi = !!has("metastats-api");
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expired = typeof payload.exp === "number" && payload.exp < nowSec;
+  const issuedAt = typeof payload.iat === "number"
+    ? new Date(payload.iat * 1000).toISOString()
+    : undefined;
+  const expiresAt = typeof payload.exp === "number"
+    ? new Date(payload.exp * 1000).toISOString()
+    : undefined;
+
+  return {
+    present: true,
+    tokenPreview: t.slice(0, 16) + "..." + t.slice(-12),
+    tokenId: payload.tokenId,
+    realUserId: payload.realUserId,
+    issuedAt,
+    expiresAt,
+    expired,
+    accessRules,
+    permissions: {
+      provisioningApi,
+      provisioningApiAll,
+      copyfactoryApi,
+      copyfactoryApiAll,
+      mtManagerApi,
+      mtManagerApiAll,
+      metaapiRestApi,
+      metaapiRestApiAll,
+      metastatsApi,
+    },
+    canAutoProvision: provisioningApiAll,
+    canUseCopyFactory: copyfactoryApiAll,
+  };
 }
