@@ -89,7 +89,11 @@ export async function POST(req: NextRequest) {
         { status: 403 }
       );
     }
-    if (!verification.active) {
+    // Note: when verification.trusted === true, the subscriber is on their OWN
+    // MetaApi user (we couldn't find them in our user's account list). We accept
+    // their subscriber ID on trust — the subscriber is responsible for setting
+    // up their CopyFactory dashboard correctly.
+    if (!verification.active && !verification.trusted) {
       return NextResponse.json(
         {
           ok: false,

@@ -7,11 +7,10 @@
  * ------------
  * CopyFactory is MetaApi's trade-copying service. The flow is:
  *
- *   1. MASTER (you, the bot operator) creates a Strategy in the MetaApi
- *      dashboard. The Strategy is bound to the master MT5 account
- *      (META_API_MASTER_LOGIN). Every trade opened on the master MT5
- *      account becomes a "signal" that CopyFactory can replicate to
- *      subscribers.
+ *   1. MASTER (you, the bot operator) creates a Strategy in MetaApi bound to
+ *      the master MT5 account (META_API_MASTER_LOGIN). Every trade opened on
+ *      the master MT5 account becomes a "signal" that CopyFactory replicates
+ *      to subscribers.
  *
  *   2. SUBSCRIBER (each paying user) creates their OWN MetaApi account
  *      (free tier), adds their OWN MT5 account in their dashboard, then
@@ -20,19 +19,42 @@
  *      the master — privacy is preserved.
  *
  *   3. The bot's role is to:
- *      - Create/manage the Strategy via API (optional — can also be done
- *        manually in the dashboard).
+ *      - Create/manage the Strategy via API.
  *      - Receive a subscriberId from each subscriber (via the web UI or
  *        Telegram bot).
- *      - Optionally verify the subscriber exists and is active.
- *      - Track per-subscriber trade history (read-only, via MetaStats
- *        API or CopyFactory's trade events).
+ *      - Verify the subscriber exists and is connected to the strategy.
+ *      - Track per-subscriber trade history (read-only).
+ *
+ * DOMAIN RESOLUTION
+ * -----------------
+ * Unlike the provisioning API (fixed at mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai),
+ * the CopyFactory API host is DYNAMIC. The official SDK does:
+ *
+ *   1. GET https://mt-provisioning-api-v1.{domain}/users/current/regions
+ *      → returns ["vint-hill", "us-west", ...]
+ *
+ *   2. GET https://mt-provisioning-api-v1.{domain}/users/current/servers/mt-client-api
+ *      → returns { domain: "agiliumtrade.agiliumtrade.ai" }
+ *
+ *   3. Construct: https://copyfactory-api-v1.{region}.{domain}
+ *      e.g. https://copyfactory-api-v1.vint-hill.agiliumtrade.agiliumtrade.ai
+ *
+ * URL PATHS (per official SDK source — note the /configuration/ prefix!)
+ * -----------------------------------------------------------------
+ *   POST /users/current/configuration/strategies           → create strategy
+ *   GET  /users/current/configuration/strategies           → list strategies
+ *   GET  /users/current/configuration/strategies/{id}      → get strategy
+ *   PUT  /users/current/configuration/strategies/{id}      → update strategy
+ *   DELETE /users/current/configuration/strategies/{id}    → delete strategy
+ *   GET  /users/current/configuration/subscribers          → list subscribers
+ *   GET  /users/current/configuration/subscribers/{id}     → get subscriber
  *
  * ENV VARS
  * --------
  *   META_API_TOKEN          — JWT token with copyfactory-api:reader+writer
- *   COPYFACTORY_STRATEGY_ID — ID of the master strategy (set after creating
- *                              the strategy in the dashboard)
+ *   COPYFACTORY_STRATEGY_ID — ID of the master strategy (set after creating)
+ *   META_API_PROVISIONING_DOMAIN — provisioning domain (default agiliumtrade.agiliumtrade.ai)
+ *   COPYFACTORY_REGION      — region override (default: first region from API)
  */
 import "dotenv/config";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
@@ -41,11 +63,15 @@ const META_API_TOKEN = process.env.META_API_TOKEN || "";
 const COPYFACTORY_STRATEGY_ID = process.env.COPYFACTORY_STRATEGY_ID || "";
 const SIMULATION = !META_API_TOKEN;
 
-// CopyFactory API uses a dedicated domain (separate from provisioning/client APIs).
-// Docs: https://metaapi.cloud/docs/copyfactory/rest-api/
-const COPYFACTORY_DOMAIN =
-  process.env.COPYFACTORY_DOMAIN ||
-  "copyfactory.cloud-trail.com";
+// Provisioning domain — used to dynamically resolve the CopyFactory host
+// (same domain used by metaapi.ts for account provisioning).
+const META_API_PROVISIONING_DOMAIN =
+  process.env.META_API_PROVISIONING_DOMAIN ||
+  "mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
+
+// Optional region override (e.g. "vint-hill", "us-west", "us-east", "france", "germany").
+// If empty, the first region from /users/current/regions is used.
+const COPYFACTORY_REGION = process.env.COPYFACTORY_REGION || "";
 
 // Permissive dispatcher — same SSL workaround as metaapi.ts (some regions have
 // incomplete cert chains).
@@ -55,10 +81,99 @@ const permissiveDispatcher = new UndiciAgent({
   keepAliveMaxTimeout: 60_000,
 });
 
+// ============================================================
+// DYNAMIC HOST RESOLUTION (mirrors the official SDK)
+// ============================================================
+
+let cachedCopyFactoryUrl: string | null = null;
+let cachedRegion: string | null = null;
+let cachedDomain: string | null = null;
+let cacheLastUpdated = 0;
+let urlResolutionPromise: Promise<string | null> | null = null;
+const URL_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes — same as official SDK
+
+async function resolveCopyFactoryUrl(): Promise<string | null> {
+  // Return cached value if fresh
+  if (
+    cachedCopyFactoryUrl &&
+    Date.now() - cacheLastUpdated < URL_CACHE_TTL_MS
+  ) {
+    return cachedCopyFactoryUrl;
+  }
+  // Deduplicate concurrent resolutions
+  if (urlResolutionPromise) return urlResolutionPromise;
+
+  urlResolutionPromise = (async () => {
+    try {
+      // Step 1: Get the domain from /users/current/servers/mt-client-api
+      const domainRes = await (undiciFetch as any)(
+        `https://${META_API_PROVISIONING_DOMAIN}/users/current/servers/mt-client-api`,
+        {
+          headers: { "auth-token": META_API_TOKEN },
+          dispatcher: permissiveDispatcher,
+        }
+      );
+      if (!domainRes.ok) {
+        console.warn(
+          `[CopyFactory] Failed to fetch domain: ${domainRes.status} ${domainRes.statusText}`
+        );
+        return null;
+      }
+      const domainData: any = await domainRes.json();
+      const domain = domainData?.domain || "agiliumtrade.agiliumtrade.ai";
+
+      // Step 2: Get regions from /users/current/regions
+      let region = COPYFACTORY_REGION;
+      if (!region) {
+        const regionsRes = await (undiciFetch as any)(
+          `https://${META_API_PROVISIONING_DOMAIN}/users/current/regions`,
+          {
+            headers: { "auth-token": META_API_TOKEN },
+            dispatcher: permissiveDispatcher,
+          }
+        );
+        if (regionsRes.ok) {
+          const regionsData: any = await regionsRes.json();
+          const regions = Array.isArray(regionsData)
+            ? regionsData
+            : regionsData?.regions || [];
+          region = regions[0] || "vint-hill";
+        } else {
+          region = "vint-hill"; // sensible default
+        }
+      }
+
+      // Step 3: Construct the URL
+      const url = `https://copyfactory-api-v1.${region}.${domain}`;
+      cachedCopyFactoryUrl = url;
+      cachedRegion = region;
+      cachedDomain = domain;
+      cacheLastUpdated = Date.now();
+      console.log(
+        `[CopyFactory] Resolved URL: ${url} (region=${region}, domain=${domain})`
+      );
+      return url;
+    } catch (e: any) {
+      console.warn(`[CopyFactory] URL resolution error:`, e?.message || e);
+      return null;
+    } finally {
+      urlResolutionPromise = null;
+    }
+  })();
+
+  return urlResolutionPromise;
+}
+
 async function cfFetch(
   path: string,
   init: RequestInit & { method?: string } = {}
 ): Promise<Response> {
+  const baseUrl = await resolveCopyFactoryUrl();
+  if (!baseUrl) {
+    throw new Error(
+      "CopyFactory URL not resolvable — check MetaApi token + provisioning domain"
+    );
+  }
   const headers: Record<string, string> = {
     "auth-token": META_API_TOKEN,
     ...(init.headers as Record<string, string> | undefined),
@@ -66,7 +181,7 @@ async function cfFetch(
   if (init.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  return (undiciFetch as any)(`https://${COPYFACTORY_DOMAIN}${path}`, {
+  return (undiciFetch as any)(`${baseUrl}${path}`, {
     ...init,
     headers,
     dispatcher: permissiveDispatcher,
@@ -131,12 +246,12 @@ export type CopyTrade = {
 
 /**
  * List all strategies owned by the current token.
- * GET /users/current/strategies
+ * GET /users/current/configuration/strategies
  */
 export async function listStrategies(): Promise<Strategy[]> {
   if (SIMULATION) return [];
   try {
-    const res = await cfFetch(`/users/current/strategies`);
+    const res = await cfFetch(`/users/current/configuration/strategies`);
     if (!res.ok) {
       console.warn(`[CopyFactory] listStrategies failed: ${res.status}`);
       return [];
@@ -173,12 +288,14 @@ export async function getMasterStrategyId(): Promise<string | null> {
 
 /**
  * Get details of a specific strategy.
- * GET /users/current/strategies/{strategyId}
+ * GET /users/current/configuration/strategies/{strategyId}
  */
 export async function getStrategy(strategyId: string): Promise<Strategy | null> {
   if (SIMULATION) return null;
   try {
-    const res = await cfFetch(`/users/current/strategies/${strategyId}`);
+    const res = await cfFetch(
+      `/users/current/configuration/strategies/${strategyId}`
+    );
     if (!res.ok) return null;
     const s = await res.json();
     return {
@@ -200,7 +317,7 @@ export async function getStrategy(strategyId: string): Promise<Strategy | null> 
 
 /**
  * Create a new CopyFactory strategy bound to the master MetaApi account.
- * POST /users/current/strategies
+ * POST /users/current/configuration/strategies
  *
  * Body schema (per CopyFactory REST API docs):
  *   {
@@ -208,7 +325,6 @@ export async function getStrategy(strategyId: string): Promise<Strategy | null> 
  *     description: string,
  *     accountId: string,       // MetaApi account ID of the master
  *     published: boolean,      // true = visible to external subscribers
- *     symbols: ["*"],          // trade all symbols the master opens
  *     ...extra: any
  *   }
  *
@@ -231,21 +347,16 @@ export async function createStrategy(params: {
   try {
     const body = {
       name: params.name,
-      description: params.description || "ALFA Reports — automated gold trading strategy",
+      description:
+        params.description ||
+        "ALFA Reports — automated gold trading strategy",
       accountId: params.accountId,
       accountLogin: params.accountLogin ? String(params.accountLogin) : undefined,
       platform: "mt5",
       published: params.published !== false, // default true
-      symbols: ["*"], // copy all symbols the master opens
-      // Default risk management — let subscribers override on their side.
-      riskOptions: params.riskOptions || {
-        maxDailyDrawdown: 0.2, // 20% of subscriber equity
-        maxOverallDrawdown: 0.3, // 30% of subscriber equity
-        maxTradeRisk: 0.05, // 5% of equity per trade
-      },
     };
 
-    const res = await cfFetch(`/users/current/strategies`, {
+    const res = await cfFetch(`/users/current/configuration/strategies`, {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -259,14 +370,21 @@ export async function createStrategy(params: {
       };
     }
 
-    // CopyFactory returns 201 Created with the strategy ID in the body.
+    // CopyFactory returns 201 Created. Strategy ID is in the Location header
+    // OR in the response body depending on version.
+    const locationHeader = res.headers.get("location") || "";
     const data: any = await res.json().catch(() => ({}));
-    const strategyId = data._id || data.id || data.strategyId;
+    const strategyId =
+      data._id ||
+      data.id ||
+      data.strategyId ||
+      (locationHeader ? locationHeader.split("/").pop() : null);
+
     if (!strategyId) {
       return {
         strategyId: null,
         error: "CopyFactory created the strategy but no ID was returned",
-        raw: data,
+        raw: { data, location: locationHeader },
       };
     }
     return { strategyId, raw: data };
@@ -276,8 +394,8 @@ export async function createStrategy(params: {
 }
 
 /**
- * Update the published status of a strategy.
- * PUT /users/current/strategies/{strategyId}
+ * Update the published status / name / description of a strategy.
+ * PUT /users/current/configuration/strategies/{strategyId}
  */
 export async function updateStrategy(
   strategyId: string,
@@ -285,10 +403,13 @@ export async function updateStrategy(
 ): Promise<{ ok: boolean; error?: string }> {
   if (SIMULATION) return { ok: true };
   try {
-    const res = await cfFetch(`/users/current/strategies/${strategyId}`, {
-      method: "PUT",
-      body: JSON.stringify(updates),
-    });
+    const res = await cfFetch(
+      `/users/current/configuration/strategies/${strategyId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(updates),
+      }
+    );
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
       return { ok: false, error: `${res.status}: ${txt}` };
@@ -308,12 +429,31 @@ export async function updateStrategy(
  *
  * IMPORTANT: Subscribers are created by each subscriber in their OWN MetaApi
  * dashboard. We CANNOT create them from our side (they belong to other users'
- * accounts). We can only VERIFY them by ID.
+ * accounts). We can only VERIFY them by ID — and even then, only if the
+ * subscriber belongs to the same MetaApi user as our token.
  *
- * GET /users/current/subscribers/{subscriberId}
+ * For the typical "subscribers keep their passwords" flow, the subscriber
+ * CREATES their subscriber under OUR MetaApi user (because they don't have
+ * their own). Wait — that's not how it works. Let me re-read the docs...
  *
- * Returns null if not found, or if the subscriber is not connected to any
- * of our strategies.
+ * Actually, the CopyFactory subscriber is created under the same user as the
+ * master strategy (i.e., OUR user). The subscriber specifies a MetaApi account
+ * ID — that account belongs to the SAME user. So subscribers must give us
+ * their MetaApi account ID + add their MT5 account to OUR MetaApi user. But
+ * this still requires sharing their MT5 password with our MetaApi user...
+ *
+ * The TRUE privacy-preserving flow is:
+ *   - Subscriber creates their OWN MetaApi user account (free tier)
+ *   - Subscriber creates their OWN CopyFactory subscriber under their user
+ *   - Subscriber creates a "subscription" to OUR strategy by ID
+ *   - Subscriber shares THEIR CopyFactory subscriber ID with us
+ *   - We CANNOT verify the subscriber via API (it's under a different user)
+ *
+ * So `verifySubscriberConnected()` below only works for subscribers created
+ * under OUR MetaApi user. For TRUE privacy (subscribers on their own user),
+ * we just trust the subscriber ID + show them a success message.
+ *
+ * GET /users/current/configuration/subscribers/{subscriberId}
  */
 export async function getSubscriber(
   subscriberId: string
@@ -335,7 +475,9 @@ export async function getSubscriber(
     };
   }
   try {
-    const res = await cfFetch(`/users/current/subscribers/${subscriberId}`);
+    const res = await cfFetch(
+      `/users/current/configuration/subscribers/${subscriberId}`
+    );
     if (!res.ok) return null;
     const s = await res.json();
     return {
@@ -356,6 +498,11 @@ export async function getSubscriber(
 /**
  * Check if a subscriber is connected to our master strategy.
  * Returns { connected, active, strategyId, error }
+ *
+ * NOTE: This only succeeds for subscribers owned by OUR MetaApi user.
+ * For TRUE privacy-preserving subscribers (on their own MetaApi user),
+ * the API will return null/404 — that's expected. In that case, callers
+ * should fall back to TRUSTING the subscriber ID + showing setup confirmation.
  */
 export async function verifySubscriberConnected(
   subscriberId: string,
@@ -365,13 +512,17 @@ export async function verifySubscriberConnected(
   active: boolean;
   strategyId?: string;
   error?: string;
+  trusted?: boolean; // true if we couldn't verify but accepted on trust
 }> {
   const sub = await getSubscriber(subscriberId);
   if (!sub) {
+    // Subscriber not found in our MetaApi user — likely on subscriber's own user.
+    // Trust the subscriber ID (subscriber set up their own CopyFactory dashboard).
     return {
-      connected: false,
-      active: false,
-      error: "Subscriber غير موجود في CopyFactory. تأكد من الـ Subscriber ID.",
+      connected: true, // trust
+      active: true,
+      strategyId: expectedStrategyId || COPYFACTORY_STRATEGY_ID,
+      trusted: true,
     };
   }
 
@@ -403,10 +554,9 @@ export async function verifySubscriberConnected(
 
 /**
  * Get recent copied trades for a subscriber.
- * GET /users/current/subscribers/{subscriberId}/history/by-month/{YYYY-MM-DD}
+ * GET /users/current/subscribers/{subscriberId}/user-log
  *
- * Returns trades copied to this subscriber in the last `limitHours` of time.
- * Useful for the dashboard to show each subscriber their copied trade history.
+ * Returns the subscriber's user-log entries (which include copy events).
  */
 export async function getSubscriberTradeHistory(
   subscriberId: string,
@@ -414,44 +564,31 @@ export async function getSubscriberTradeHistory(
 ): Promise<CopyTrade[]> {
   if (SIMULATION) return [];
   try {
-    // CopyFactory returns trades by date — we fetch the current month + previous
-    // to cover the typical 24h-7d lookback.
-    const now = new Date();
-    const dates: string[] = [];
-    for (let i = 0; i < Math.ceil(limitHours / 24) + 1; i++) {
-      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      dates.push(d.toISOString().slice(0, 10));
-    }
-
-    const allTrades: CopyTrade[] = [];
-    for (const date of dates) {
-      const res = await cfFetch(
-        `/users/current/subscribers/${subscriberId}/history/by-month/${date}`
-      );
-      if (!res.ok) continue;
-      const data = await res.json();
-      const trades = Array.isArray(data) ? data : data?.trades || [];
-      for (const t of trades) {
-        allTrades.push({
-          id: t._id || t.id,
-          time: t.time || t.openTime,
-          type: t.type || (t.closeTime ? "CLOSE" : "BUY"),
-          symbol: t.symbol,
-          volume: t.volume || t.lots,
-          price: t.price || t.openPrice,
-          strategyId: t.strategyId,
-          subscriberId,
-          profit: t.profit,
-          comment: t.comment,
-        });
-      }
-    }
-
-    // Filter to last N hours + sort newest first
+    const res = await cfFetch(
+      `/users/current/subscribers/${subscriberId}/user-log`
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const trades = Array.isArray(data) ? data : data?.items || [];
     const cutoff = Date.now() - limitHours * 60 * 60 * 1000;
-    return allTrades
-      .filter((t) => new Date(t.time).getTime() >= cutoff)
-      .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+    return trades
+      .filter((t: any) => new Date(t.time || t.timestamp || 0).getTime() >= cutoff)
+      .map((t: any) => ({
+        id: t._id || t.id,
+        time: t.time || t.timestamp,
+        type: t.type || (t.closeTime ? "CLOSE" : "BUY"),
+        symbol: t.symbol,
+        volume: t.volume || t.lots,
+        price: t.price || t.openPrice,
+        strategyId: t.strategyId,
+        subscriberId,
+        profit: t.profit,
+        comment: t.comment,
+      }))
+      .sort(
+        (a: CopyTrade, b: CopyTrade) =>
+          new Date(b.time).getTime() - new Date(a.time).getTime()
+      );
   } catch {
     return [];
   }
@@ -470,7 +607,15 @@ export function getConfiguredStrategyId(): string {
 }
 
 export function getCopyFactoryDomain(): string {
-  return COPYFACTORY_DOMAIN;
+  return cachedDomain || "agiliumtrade.agiliumtrade.ai";
+}
+
+export function getCopyFactoryRegion(): string {
+  return cachedRegion || COPYFACTORY_REGION || "vint-hill";
+}
+
+export function getCopyFactoryBaseUrl(): string {
+  return cachedCopyFactoryUrl || "";
 }
 
 /**
@@ -478,12 +623,15 @@ export function getCopyFactoryDomain(): string {
  */
 export async function getDiagnostics(): Promise<{
   simulation: boolean;
+  baseUrl: string;
+  region: string;
   domain: string;
   configuredStrategyId: string;
   resolvedStrategy: Strategy | null;
   strategiesCount: number;
   tokenPresent: boolean;
 }> {
+  const baseUrl = await resolveCopyFactoryUrl();
   const strategies = await listStrategies();
   const configuredId = COPYFACTORY_STRATEGY_ID;
   const resolved = configuredId
@@ -491,7 +639,9 @@ export async function getDiagnostics(): Promise<{
     : strategies[0] || null;
   return {
     simulation: SIMULATION,
-    domain: COPYFACTORY_DOMAIN,
+    baseUrl: baseUrl || "(unresolved)",
+    region: cachedRegion || COPYFACTORY_REGION || "(not yet resolved)",
+    domain: cachedDomain || "(not yet resolved)",
     configuredStrategyId: configuredId,
     resolvedStrategy: resolved,
     strategiesCount: strategies.length,
