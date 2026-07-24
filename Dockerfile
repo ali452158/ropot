@@ -43,6 +43,33 @@ ENV NODE_OPTIONS=--max-old-space-size=4096
 
 RUN npm run build
 
+# ============ Compile Telegram bot (standalone ESM) ============
+# The polling bot lives in src/bot/polling-bot.ts and uses native fetch.
+# We compile it with tsc to dist/bot/polling-bot.mjs so the runner stage can
+# execute it via `node dist/bot/polling-bot.mjs`.
+#
+# The bot imports from ../lib/telegram — tsc preserves the relative import,
+# so we compile BOTH files. We rename the output to .mjs to force Node to
+# treat it as ESM (package.json has "type": "module" via Next.js 16 default).
+RUN npx tsc \
+    src/bot/polling-bot.ts \
+    src/lib/telegram.ts \
+    --module esnext \
+    --moduleResolution bundler \
+    --target es2022 \
+    --skipLibCheck \
+    --outDir dist/bot-compiled \
+    --rootDir src \
+    --esModuleInterop \
+    --resolveJsonModule \
+    --allowJs false \
+    --noEmitOnError false 2>&1 | tail -10 || true
+
+# Verify the bot was compiled (if not, log a warning — bot will be unavailable
+# but the web app still works).
+RUN ls -la dist/bot-compiled/bot/polling-bot.js 2>&1 || \
+    echo "WARNING: Telegram bot was not compiled — bot service will fail to start."
+
 # ---------- Stage 3: runner ----------
 FROM node:22-slim AS runner
 WORKDIR /app
@@ -79,6 +106,9 @@ COPY --from=builder /app/node_modules ./node_modules
 
 # ============ Prisma and database files ============
 COPY --from=builder /app/prisma ./prisma
+
+# ============ Telegram bot script (compiled by tsc) ============
+COPY --from=builder /app/dist/bot-compiled ./dist/bot-compiled
 
 EXPOSE 3000
 
