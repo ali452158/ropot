@@ -118,9 +118,10 @@ META_API_PROVISIONING_DOMAIN=mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai
 META_API_MASTER_LOGIN=472266644
 ADMIN_API_TOKEN=uosL8m8cV43mBlw2D5qyMKG6Cvio9xyfB1b88K6eLyTi05a9
 DATABASE_URL=file:/app/db/custom.db
-# CopyFactory — strategy bound to master MetaApi account 86cdebec-ea25-4e07-a208-69c0048dd4fd
+# CopyFactory — strategy 'sYlr' (Gold Reade) created by user in MetaApi dashboard.
+# Strategy is bound to master MetaApi account 86cdebec-ea25-4e07-a208-69c0048dd4fd
 # which is connected to MT5 login 472266644 on Exness-MT5Trial16 (region london).
-COPYFACTORY_STRATEGY_ID=86cdebec-ea25-4e07-a208-69c0048dd4fd
+COPYFACTORY_STRATEGY_ID=sYlr
 # Telegram bot (long-polling sidecar) — generates activation codes via /api/codes/generate
 # Bot token from @BotFather; admin Telegram IDs (comma-separated) who can use the bot.
 TELEGRAM_BOT_TOKEN=7247077218:AAF9v9Z0AEzyH91E8cUhSvuF2DLt0y6wBC4
