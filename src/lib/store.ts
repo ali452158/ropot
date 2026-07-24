@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type AppStage = "activation" | "mt5-login" | "dashboard";
+export type AppStage = "activation" | "mt5-login" | "copyfactory-login" | "dashboard";
 
 export type ActivationState = {
   code: string;

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useAppStore } from "@/lib/store";
 import { ActivationScreen } from "@/components/screens/activation-screen";
 import { Mt5LoginScreen } from "@/components/screens/mt5-login-screen";
+import { CopyfactoryLoginScreen } from "@/components/screens/copyfactory-login-screen";
 import { DashboardScreen } from "@/components/screens/dashboard-screen";
 
 export default function Home() {
@@ -37,6 +38,7 @@ export default function Home() {
       <div className="relative z-10">
         {stage === "activation" && <ActivationScreen />}
         {stage === "mt5-login" && <Mt5LoginScreen />}
+        {stage === "copyfactory-login" && <CopyfactoryLoginScreen />}
         {stage === "dashboard" && <DashboardScreen />}
       </div>
     </main>

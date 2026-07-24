@@ -300,6 +300,24 @@ export function Mt5LoginScreen() {
                   </>
                 )}
               </Button>
+
+              {/* Divider */}
+              <div className="flex items-center gap-3 py-1">
+                <div className="flex-1 h-px bg-cyan-500/20" />
+                <span className="text-[10px] text-cyan-700/60 uppercase tracking-wider">
+                  أو
+                </span>
+                <div className="flex-1 h-px bg-cyan-500/20" />
+              </div>
+
+              {/* CopyFactory alternative */}
+              <button
+                onClick={() => useAppStore.getState().setStage("copyfactory-login")}
+                className="w-full h-11 rounded-md border border-green-500/40 bg-green-500/10 text-green-300 hover:bg-green-500/20 hover:border-green-400 text-sm font-bold transition-colors flex items-center justify-center gap-2"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                ربط عبر CopyFactory (بدون مشاركة كلمة مرور MT5)
+              </button>
             </div>
           </CardContent>
         </Card>

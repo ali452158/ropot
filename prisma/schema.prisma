@@ -46,12 +46,21 @@ model MT5Session {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  // CopyFactory fields — populated when subscriber uses CopyFactory flow
+  // (subscriber creates their own MetaApi account + Subscriber, gives us the ID).
+  // When subscriberId is set, mt5Login/mt5Server/mt5PasswordHash are empty
+  // (the subscriber never shares their MT5 credentials with us).
+  copyFactorySubscriberId String? // CopyFactory Subscriber ID (e.g., "sub-abc123")
+  copyFactoryStrategyId   String? // The strategy this subscriber is connected to
+  copyFactoryState        String? // ACTIVE, DISCONNECTED, etc. (last known state)
+
   activationCode  ActivationCode @relation(fields: [activationCodeId], references: [id])
   botConfig       BotConfig?
   trades          Trade[]
 
   @@index([sessionId])
   @@index([activationCodeId])
+  @@index([copyFactorySubscriberId])
 }
 
 // Bot configuration per session
