@@ -400,20 +400,25 @@ export async function provisionMetaApiAccount(
     });
     if (!res.ok) {
       const text = await res.text();
-      // 401 = token is missing the metaapi-provisioning-api permission entirely.
-      // The provisioning API (mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai)
-      // requires the "metaapi-provisioning-api" access rule with role "writer".
-      // Without it, EVERY call to /users/current/accounts returns 401, even GET.
+      // 401 = token is missing both metaapi-provisioning-api AND
+      // trading-account-management-api permissions. The provisioning API
+      // (mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai) requires one of
+      // these access rules with role "writer". Without it, EVERY call to
+      // /users/current/accounts returns 401, even GET.
+      // NOTE: trading-account-management-api is the NEW name (replaces the
+      // old metaapi-provisioning-api). Both work; either is sufficient.
       if (res.status === 401) {
         return {
           metaApiAccountId: "",
           error:
             `MetaApi رفض التوكن (401 Unauthorized). ` +
-            `السبب: التوكن الحالي لا يملك صلاحية "metaapi-provisioning-api" ` +
-            `اللازمة لإنشاء/سرد/حذف حسابات MetaApi. ` +
+            `السبب: التوكن الحالي لا يملك صلاحية إنشاء/سرد حسابات MetaApi. ` +
+            `في واجهة MetaApi الجديدة، هذه الصلاحية تُمنح عبر "Trading account management API" ` +
+            `مع دور "writer" — وهي البديل الحديث لصلاحية "Provisioning API" القديمة. ` +
             `الحل: (1) افتح app.metaapi.cloud → Settings → API tokens، ` +
             `(2) عدّل التوكن الحالي أو أنشئ توكن جديد، ` +
-            `(3) فعّل صلاحية "Provisioning API" مع دور "writer" على كل الموارد، ` +
+            `(3) فعّل صلاحية "Trading account management API" مع دور "writer" ` +
+            `على الموارد (يفضّل '*:\$USER_ID\$:*' لكل الموارد، أو على الأقل الحساب المطلوب)، ` +
             `(4) حدّث META_API_TOKEN في ملف .env على السيرفر وأعد التشغيل. ` +
             `تفاصيل الخطأ الأصلي: ${text}`,
         };
@@ -816,8 +821,10 @@ export function inspectMetaApiToken(): {
     scope: "ALL" | "LIMITED";
   }>;
   permissions: {
-    provisioningApi: boolean; // metaapi-provisioning-api (create/list/delete accounts)
+    provisioningApi: boolean; // metaapi-provisioning-api OR trading-account-management-api (new)
     provisioningApiAll: boolean; // ... on ALL resources (not just one account)
+    tradingAccountMgmtApi: boolean; // trading-account-management-api (new style, replaces provisioning-api)
+    tradingAccountMgmtApiAll: boolean;
     copyfactoryApi: boolean;
     copyfactoryApiAll: boolean;
     mtManagerApi: boolean;
@@ -838,6 +845,8 @@ export function inspectMetaApiToken(): {
       permissions: {
         provisioningApi: false,
         provisioningApiAll: false,
+        tradingAccountMgmtApi: false,
+        tradingAccountMgmtApiAll: false,
         copyfactoryApi: false,
         copyfactoryApiAll: false,
         mtManagerApi: false,
@@ -886,8 +895,14 @@ export function inspectMetaApiToken(): {
     const r = has(id);
     return !!r && r.scope === "ALL" && r.roles.includes("writer");
   };
+  // Old permission name: metaapi-provisioning-api (still works for legacy tokens)
   const provisioningApi = !!has("metaapi-provisioning-api");
   const provisioningApiAll = hasAll("metaapi-provisioning-api");
+  // NEW permission name: trading-account-management-api (replaces provisioning-api)
+  // The new token UI in MetaApi bundles all createAccount/deployAccount/getAccounts
+  // methods under this single access rule. We treat it as equivalent.
+  const tradingAccountMgmtApi = !!has("trading-account-management-api");
+  const tradingAccountMgmtApiAll = hasAll("trading-account-management-api");
   const copyfactoryApi = !!has("copyfactory-api");
   const copyfactoryApiAll = hasAll("copyfactory-api");
   const mtManagerApi = !!has("mt-manager-api");
@@ -917,6 +932,8 @@ export function inspectMetaApiToken(): {
     permissions: {
       provisioningApi,
       provisioningApiAll,
+      tradingAccountMgmtApi,
+      tradingAccountMgmtApiAll,
       copyfactoryApi,
       copyfactoryApiAll,
       mtManagerApi,
@@ -925,7 +942,9 @@ export function inspectMetaApiToken(): {
       metaapiRestApiAll,
       metastatsApi,
     },
-    canAutoProvision: provisioningApiAll,
+    // canAutoProvision is true if EITHER the old provisioning-api OR the new
+    // trading-account-management-api has writer role on ALL accounts.
+    canAutoProvision: provisioningApiAll || tradingAccountMgmtApiAll,
     canUseCopyFactory: copyfactoryApiAll,
   };
 }
