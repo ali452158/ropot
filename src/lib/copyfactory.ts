@@ -421,37 +421,232 @@ export async function updateStrategy(
 }
 
 // ============================================================
+// SUBSCRIBER CREATION (auto-provisioning flow)
+// ============================================================
+
+/**
+ * List all CopyFactory subscribers owned by the current token.
+ * GET /users/current/configuration/subscribers
+ *
+ * Returns an array (empty on error).
+ */
+export async function listSubscribers(): Promise<Subscriber[]> {
+  if (SIMULATION) return [];
+  try {
+    const res = await cfFetch(`/users/current/configuration/subscribers`);
+    if (!res.ok) {
+      console.warn(`[CopyFactory] listSubscribers failed: ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    const arr = Array.isArray(data) ? data : data?.items || [];
+    return arr.map((s: any) => ({
+      _id: s._id || s.id,
+      name: s.name,
+      accountId: s.accountId,
+      accountLogin: String(s.accountLogin || ""),
+      platform: s.platform || "mt5",
+      strategies: s.strategies || [],
+      state: s.state || "UNKNOWN",
+      connectionStatus: s.connectionStatus,
+    }));
+  } catch (e) {
+    console.warn(`[CopyFactory] listSubscribers error:`, e);
+    return [];
+  }
+}
+
+/**
+ * Create a CopyFactory Subscriber and link it to the master strategy.
+ * POST /users/current/configuration/subscribers
+ *
+ * AUTOMATIC FLOW (used by /api/subscriber/register when the subscriber
+ * enters their MT5 credentials in our bot):
+ *
+ *   1. We already called provisionMetaApiAccount(login, password, server)
+ *      → got a MetaApi account ID under OUR user.
+ *   2. We call this function with that MetaApi account ID + our strategy ID.
+ *   3. CopyFactory creates a Subscriber bound to the MetaApi account, and
+ *      immediately subscribes it to our master strategy.
+ *   4. From this point on, any trade opened on the master MT5 account will
+ *      be auto-copied to the subscriber's MT5 account by CopyFactory Cloud.
+ *
+ * The subscriber's MT5 password was passed ONCE to the MetaApi provisioning
+ * API (in step 1) — we never persist it in our DB. Only the resulting
+ * MetaApi account ID + Subscriber ID are stored.
+ *
+ * Body schema (per CopyFactory REST API docs):
+ *   {
+ *     name: string,                     // human-readable name
+ *     accountId: string,                // MetaApi account ID of the subscriber
+ *     platform: "mt5",
+ *     strategies: [
+ *       {
+ *         strategyId: string,           // master strategy ID
+ *         name?: string,                // optional label
+ *         active: true,                 // start copying immediately
+ *         skipCopyOpenPositions: true,  // don't copy positions already open on master
+ *         maxTradeRisk?: number,        // optional: per-trade risk cap
+ *         reverse?: false,
+ *         reduceTradeRiskToZeroOnStopOut?: true
+ *       }
+ *     ]
+ *   }
+ *
+ * Returns the created subscriber ID, or null on failure.
+ */
+export async function createSubscriber(params: {
+  name: string;
+  accountId: string; // subscriber's MetaApi account ID (provisioned via metaapi.ts)
+  strategyId: string; // master CopyFactory strategy ID
+  accountLogin?: string;
+  riskOptions?: {
+    maxTradeRisk?: number; // e.g. 1.0 = risk 1 unit per trade
+    minTradeRisk?: number;
+    executionRisk?: number;
+  };
+}): Promise<{
+  subscriberId: string | null;
+  error?: string;
+  raw?: unknown;
+}> {
+  if (SIMULATION) {
+    return {
+      subscriberId: `sim-sub-${Date.now().toString(36)}`,
+      raw: { simulated: true },
+    };
+  }
+  try {
+    const body: Record<string, unknown> = {
+      name: params.name,
+      description: `ALFA Reports auto-provisioned subscriber for MT5 account ${
+        params.accountLogin || "(unknown)"
+      }`,
+      accountId: params.accountId,
+      platform: "mt5",
+      strategies: [
+        {
+          strategyId: params.strategyId,
+          name: "ALFA Gold Strategy",
+          active: true,
+          skipCopyOpenPositions: true, // don't copy pre-existing master trades
+          reduceTradeRiskToZeroOnStopOut: true,
+          ...(params.riskOptions || {}),
+        },
+      ],
+    };
+
+    const res = await cfFetch(`/users/current/configuration/subscribers`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return {
+        subscriberId: null,
+        error: `CopyFactory createSubscriber API ${res.status}: ${
+          txt || res.statusText
+        }`,
+        raw: { status: res.status, body: txt },
+      };
+    }
+
+    // CopyFactory returns 201 Created. Subscriber ID is in the Location header
+    // OR in the response body depending on version.
+    const locationHeader = res.headers.get("location") || "";
+    const data: any = await res.json().catch(() => ({}));
+    const subscriberId =
+      data._id ||
+      data.id ||
+      data.subscriberId ||
+      (locationHeader ? locationHeader.split("/").pop() : null);
+
+    if (!subscriberId) {
+      return {
+        subscriberId: null,
+        error:
+          "CopyFactory created the subscriber but no ID was returned in body or Location header",
+        raw: { data, location: locationHeader },
+      };
+    }
+
+    console.log(
+      `[CopyFactory] Subscriber created: id=${subscriberId} accountId=${params.accountId} strategyId=${params.strategyId}`
+    );
+    return { subscriberId, raw: data };
+  } catch (e: any) {
+    return { subscriberId: null, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Update the strategies linked to an existing subscriber (e.g. to add or
+ * remove a strategy, pause copying, etc.).
+ * PUT /users/current/configuration/subscribers/{subscriberId}
+ */
+export async function updateSubscriberStrategies(
+  subscriberId: string,
+  strategies: Array<{
+    strategyId: string;
+    active?: boolean;
+    skipCopyOpenPositions?: boolean;
+    maxTradeRisk?: number;
+    reverse?: boolean;
+  }>
+): Promise<{ ok: boolean; error?: string }> {
+  if (SIMULATION) return { ok: true };
+  try {
+    const res = await cfFetch(
+      `/users/current/configuration/subscribers/${subscriberId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ strategies }),
+      }
+    );
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return { ok: false, error: `${res.status}: ${txt}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Delete a subscriber (used on session cleanup).
+ * DELETE /users/current/configuration/subscribers/{subscriberId}
+ */
+export async function deleteSubscriber(
+  subscriberId: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (SIMULATION) return { ok: true };
+  try {
+    const res = await cfFetch(
+      `/users/current/configuration/subscribers/${subscriberId}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return { ok: false, error: `${res.status}: ${txt}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+// ============================================================
 // SUBSCRIBER VERIFICATION (bot side — read-only)
 // ============================================================
 
 /**
  * Verify that a subscriber exists and is connected to our strategy.
  *
- * IMPORTANT: Subscribers are created by each subscriber in their OWN MetaApi
- * dashboard. We CANNOT create them from our side (they belong to other users'
- * accounts). We can only VERIFY them by ID — and even then, only if the
- * subscriber belongs to the same MetaApi user as our token.
- *
- * For the typical "subscribers keep their passwords" flow, the subscriber
- * CREATES their subscriber under OUR MetaApi user (because they don't have
- * their own). Wait — that's not how it works. Let me re-read the docs...
- *
- * Actually, the CopyFactory subscriber is created under the same user as the
- * master strategy (i.e., OUR user). The subscriber specifies a MetaApi account
- * ID — that account belongs to the SAME user. So subscribers must give us
- * their MetaApi account ID + add their MT5 account to OUR MetaApi user. But
- * this still requires sharing their MT5 password with our MetaApi user...
- *
- * The TRUE privacy-preserving flow is:
- *   - Subscriber creates their OWN MetaApi user account (free tier)
- *   - Subscriber creates their OWN CopyFactory subscriber under their user
- *   - Subscriber creates a "subscription" to OUR strategy by ID
- *   - Subscriber shares THEIR CopyFactory subscriber ID with us
- *   - We CANNOT verify the subscriber via API (it's under a different user)
- *
- * So `verifySubscriberConnected()` below only works for subscribers created
- * under OUR MetaApi user. For TRUE privacy (subscribers on their own user),
- * we just trust the subscriber ID + show them a success message.
+ * In the AUTOMATIC flow, the subscriber is created under OUR MetaApi user
+ * (because we provisioned their MT5 account on their behalf). So we CAN
+ * verify them by ID via the CopyFactory API.
  *
  * GET /users/current/configuration/subscribers/{subscriberId}
  */
