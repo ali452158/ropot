@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
  *   - Every accessRule in the token (api id / methods / roles / resources /
  *     scope = ALL|LIMITED).
  *   - Derived booleans for the permissions that matter to our app:
- *       provisioningApiAll  → can auto-provision new MetaApi accounts
+ *       provisioningApiAll / tradingAccountMgmtApiAll  → can auto-provision new MetaApi accounts
  *       copyfactoryApiAll   → can drive CopyFactory programmatically
  *       mtManagerApiAll     → can trade on any account
  *       metaapiRestApiAll   → can read candles/prices from any account
@@ -68,14 +68,22 @@ export async function GET(req: NextRequest) {
   } else if (inspection.expired) {
     nextSteps.push("التوكن منتهي الصلاحية — أنشئ توكن جديد من لوحة MetaApi.");
   } else {
-    if (!inspection.permissions.provisioningApi) {
-      nextSteps.push(
-        "أضف صلاحية Provisioning API (metaapi-provisioning-api) بدور writer على كل الموارد (*:$USER_ID$:*) لتشغيل الربط التلقائي للمشتركين."
-      );
-    } else if (!inspection.permissions.provisioningApiAll) {
-      nextSteps.push(
-        "صلاحية Provisioning API موجودة لكنها مقتصرة على حساب واحد فقط — وسّعها لتشمل كل الموارد (*:$USER_ID$:*)."
-      );
+    if (!inspection.canAutoProvision) {
+      // Detailed explanation: the new token UI uses "Trading account management API"
+      // (access rule id = trading-account-management-api) instead of the legacy
+      // "Provisioning API" (metaapi-provisioning-api). Either works for create/
+      // list/deploy, but it must have writer role on ALL resources (*:$USER_ID$:*).
+      const hasOld = inspection.permissions.provisioningApi;
+      const hasNew = inspection.permissions.tradingAccountMgmtApi;
+      if (!hasOld && !hasNew) {
+        nextSteps.push(
+          "أضف صلاحية 'Trading account management API' (trading-account-management-api) بدور writer على كل الموارد (*:$USER_ID$:*) لتشغيل الربط التلقائي للمشتركين. هذه الصلاحية هي البديل الحديث لـ 'Provisioning API' القديمة."
+        );
+      } else {
+        nextSteps.push(
+          "صلاحية إدارة الحسابات موجودة لكنها مقتصرة على حساب واحد فقط — وسّعها لتشمل كل الموارد (*:$USER_ID$:*) لتشغيل الربط التلقائي لأي مشترك جديد."
+        );
+      }
     }
     if (!inspection.permissions.copyfactoryApi) {
       nextSteps.push(
@@ -92,7 +100,7 @@ export async function GET(req: NextRequest) {
       );
     }
     if (
-      inspection.permissions.provisioningApiAll &&
+      inspection.canAutoProvision &&
       inspection.permissions.copyfactoryApiAll &&
       inspection.permissions.mtManagerApiAll
     ) {
