@@ -34,6 +34,24 @@ const COMMON_SERVERS = [
   "Pepperstone-Live",
   "FTMO-Demo",
   "FTMO-Server",
+  "Exness-MT5Trial15",
+  "Exness-MT5Trial2",
+  "Exness-MT5Trial5",
+  "Exness-MT5Trial7",
+  "Exness-MT5Trial10",
+  "Exness-MT5Real",
+  "Exness-MT5Real2",
+  "Exness-MT5Real3",
+  "Exness-MT5Real5",
+  "Exness-MT5Real7",
+  "Exness-MT5Real9",
+  "Exness-MT5Real10",
+  "Exness-MT5Real13",
+  "Exness-MT5Real15",
+  "Exness-MT5Real16",
+  "Exness-MT5Real17",
+  "Exness-MT5Real18",
+  "Exness-MT5Real21",
   "Exness-Demo",
   "Exness-Real",
   "FXTM-Demo",
@@ -260,6 +278,8 @@ export function Mt5LoginScreen() {
                 <span>
                   بيانات MT5 تُرسَل بأمان إلى MetaAPI Cloud لربط حسابك. كلمة المرور
                   تُخزَّن مشفّرة (scrypt + salt) ولا تُستخدم إلا لتنفيذ الصفقات.
+                  سيقوم البوت تلقائياً بفتح وإغلاق الصفقات على حسابك بناءً على
+                  إشارات الماستر — لا حاجة لأي تدخل يدوي.
                 </span>
               </div>
 
