@@ -61,9 +61,11 @@ export function ActivationScreen() {
       });
       toast({
         title: "تم تفعيل الكود",
-        description: data.message || "يمكنك الآن تسجيل الدخول إلى MT5",
+        description: data.message || "يمكنك الآن ربط حسابك عبر CopyFactory",
       });
-      setStage("mt5-login");
+      // Default to CopyFactory (privacy-preserving — no MT5 password shared).
+      // Subscribers can still switch to direct MT5 login from the alternate button.
+      setStage("copyfactory-login");
     } catch (e: any) {
       setError(e?.message || "حدث خطأ");
     } finally {
