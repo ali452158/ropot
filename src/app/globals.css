@@ -126,11 +126,16 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
   }
   html,
   body {
     @apply bg-background text-foreground;
     min-height: 100%;
+    /* Mobile webapp: prevent horizontal overflow + rubber-band scroll */
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
   }
   body {
     background-image:
@@ -138,6 +143,32 @@
       radial-gradient(circle at 85% 90%, rgba(56, 189, 248, 0.06), transparent 45%),
       linear-gradient(180deg, #05070d 0%, #0a0e18 100%);
     background-attachment: fixed;
+    /* iOS safe-area: leave space for notch + bottom home indicator */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+  /* Make tap targets feel native on mobile */
+  button,
+  [role="button"],
+  a,
+  input,
+  select,
+  textarea {
+    touch-action: manipulation;
+  }
+  /* Disable iOS text size adjustment on rotation */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  /* Hide scrollbars for cleaner mobile feel but keep scrolling */
+  @media (max-width: 768px) {
+    ::-webkit-scrollbar {
+      width: 0;
+      height: 0;
+    }
   }
 }
 

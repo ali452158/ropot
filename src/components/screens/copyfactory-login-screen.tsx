@@ -193,13 +193,13 @@ export function CopyfactoryLoginScreen() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-8">
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 py-6 sm:p-4 md:p-8">
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex items-center gap-4 mb-8"
+        className="flex items-center gap-3 sm:gap-4 mb-6 md:mb-8"
       >
-        <AlfaLogo size={56} />
+        <AlfaLogo size={48} />
         <AlfaWordmark subtitle={false} />
       </motion.div>
 
@@ -210,12 +210,12 @@ export function CopyfactoryLoginScreen() {
         className="w-full max-w-md"
       >
         <Card className="glass-panel neon-border-soft rounded-2xl scanline relative">
-          <CardContent className="p-6 md:p-8">
+          <CardContent className="p-4 sm:p-6 md:p-8">
             {/* Status row */}
-            <div className="flex items-center justify-between mb-6 pb-4 border-b border-cyan-500/20">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-xs text-cyan-200/70">
+            <div className="flex items-center justify-between mb-5 md:mb-6 pb-3 md:pb-4 border-b border-cyan-500/20 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse shrink-0" />
+                <span className="text-[11px] sm:text-xs text-cyan-200/70 truncate">
                   الكود مفعّل — متبقي{" "}
                   <span className="text-cyan-300 font-bold">
                     {activation.expiresAt
@@ -229,10 +229,10 @@ export function CopyfactoryLoginScreen() {
                   </span>
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                 <Badge
                   variant="outline"
-                  className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[10px]"
+                  className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[9px] sm:text-[10px] px-2"
                 >
                   COPYFACTORY
                 </Badge>
@@ -240,17 +240,17 @@ export function CopyfactoryLoginScreen() {
                   type="button"
                   onClick={handleBack}
                   title="خروج وإدخال كود جديد"
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-400 text-[11px] font-bold transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-400 text-[10px] sm:text-[11px] font-bold transition-colors active:scale-95"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>خروج</span>
+                  <span className="hidden sm:inline">خروج</span>
                 </button>
               </div>
             </div>
 
             <div className="flex items-center gap-2 mb-3">
               <Link2 className="w-5 h-5 text-cyan-400" />
-              <h2 className="text-lg font-bold text-white">
+              <h2 className="text-base sm:text-lg font-bold text-white">
                 ربط حسابك بالاستراتيجية
               </h2>
             </div>
@@ -263,14 +263,15 @@ export function CopyfactoryLoginScreen() {
                   setMode("auto");
                   setError("");
                 }}
-                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md text-xs font-bold transition-all ${
+                className={`flex items-center justify-center gap-1.5 py-2 px-2 sm:px-3 rounded-md text-[11px] sm:text-xs font-bold transition-all ${
                   mode === "auto"
                     ? "bg-gradient-to-r from-cyan-500/30 to-blue-500/30 text-cyan-100 border border-cyan-400/40"
                     : "text-cyan-300/60 hover:text-cyan-200 border border-transparent"
                 }`}
               >
-                <Zap className="w-3.5 h-3.5" />
-                ربط تلقائي (موصى به)
+                <Zap className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden xs:inline sm:inline">ربط تلقائي</span>
+                <span className="xs:hidden sm:hidden">تلقائي</span>
               </button>
               <button
                 type="button"
@@ -278,14 +279,14 @@ export function CopyfactoryLoginScreen() {
                   setMode("manual");
                   setError("");
                 }}
-                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md text-xs font-bold transition-all ${
+                className={`flex items-center justify-center gap-1.5 py-2 px-2 sm:px-3 rounded-md text-[11px] sm:text-xs font-bold transition-all ${
                   mode === "manual"
                     ? "bg-gradient-to-r from-cyan-500/30 to-blue-500/30 text-cyan-100 border border-cyan-400/40"
                     : "text-cyan-300/60 hover:text-cyan-200 border border-transparent"
                 }`}
               >
-                <KeyRound className="w-3.5 h-3.5" />
-                ربط يدوي (Subscriber ID)
+                <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                <span>ربط يدوي</span>
               </button>
             </div>
 
@@ -298,15 +299,15 @@ export function CopyfactoryLoginScreen() {
                   exit={{ opacity: 0, x: -10 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <p className="text-sm text-cyan-200/70 mb-4 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-cyan-200/70 mb-4 leading-relaxed">
                     ادخل بيانات حساب MT5 الخاص بك. البوت هيـ provision حساب
                     MetaApi ويـربط CopyFactory تلقائياً. كل صفقات الماستر هتنسخ
                     على حسابك مباشرة.
                   </p>
 
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+                  <div className="space-y-3 sm:space-y-4">
+                    <div className="space-y-1.5 sm:space-y-2">
+                      <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                         <User className="w-3.5 h-3.5" />
                         MT5 Login (رقم الحساب)
                       </Label>
@@ -318,13 +319,14 @@ export function CopyfactoryLoginScreen() {
                         onChange={(e) =>
                           setMt5Login(e.target.value.trim())
                         }
-                        className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-11 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                        className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-12 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                         disabled={loading}
+                        autoComplete="username"
                       />
                     </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+                    <div className="space-y-1.5 sm:space-y-2">
+                      <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                         <KeyRound className="w-3.5 h-3.5" />
                         MT5 Password
                       </Label>
@@ -337,14 +339,14 @@ export function CopyfactoryLoginScreen() {
                           onChange={(e) =>
                             setMt5Password(e.target.value)
                           }
-                          className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-11 pr-10 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                          className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-12 pr-10 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                           disabled={loading}
                           autoComplete="new-password"
                         />
                         <button
                           type="button"
                           onClick={() => setShowPassword((s) => !s)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-cyan-400/60 hover:text-cyan-300"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-cyan-400/60 hover:text-cyan-300"
                           tabIndex={-1}
                         >
                           {showPassword ? (
@@ -356,8 +358,8 @@ export function CopyfactoryLoginScreen() {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+                    <div className="space-y-1.5 sm:space-y-2">
+                      <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                         <Server className="w-3.5 h-3.5" />
                         MT5 Server
                       </Label>
@@ -369,21 +371,22 @@ export function CopyfactoryLoginScreen() {
                         onChange={(e) =>
                           setMt5Server(e.target.value.trim())
                         }
-                        className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-11 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                        className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-12 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                         disabled={loading}
+                        autoComplete="off"
                       />
                       <datalist id="mt5-servers">
                         {COMMON_SERVERS.map((s) => (
                           <option key={s} value={s} />
                         ))}
                       </datalist>
-                      <p className="text-[11px] text-cyan-300/50">
+                      <p className="text-[10px] sm:text-[11px] text-cyan-300/50">
                         اسم السيرفر تجده في تطبيق MT5 (Tools → Options → Server)
                         أو في رسالة الترحيب من الوسيط.
                       </p>
                     </div>
 
-                    <div className="flex items-start gap-2 p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-green-200/70 text-xs leading-relaxed">
+                    <div className="flex items-start gap-2 p-2.5 sm:p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-green-200/70 text-[11px] sm:text-xs leading-relaxed">
                       <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-green-400" />
                       <span>
                         <strong className="text-green-300">
@@ -405,28 +408,28 @@ export function CopyfactoryLoginScreen() {
                   exit={{ opacity: 0, x: -10 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <p className="text-sm text-cyan-200/70 mb-4 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-cyan-200/70 mb-4 leading-relaxed">
                     إذا أنشأت Subscriber يدوياً في لوحة MetaApi، أدخل الـ
                     Subscriber ID هنا.
                   </p>
 
                   {/* Strategy ID panel — needed for manual setup */}
-                  <div className="mb-4 p-4 rounded-lg bg-gradient-to-br from-cyan-500/10 to-blue-500/10 border border-cyan-500/30">
+                  <div className="mb-4 p-3 sm:p-4 rounded-lg bg-gradient-to-br from-cyan-500/10 to-blue-500/10 border border-cyan-500/30">
                     <div className="flex items-center gap-2 mb-2">
                       <KeyRound className="w-4 h-4 text-cyan-400" />
-                      <span className="text-xs font-bold text-cyan-200 uppercase tracking-wider">
+                      <span className="text-[11px] sm:text-xs font-bold text-cyan-200 uppercase tracking-wider">
                         Master Strategy ID
                       </span>
                     </div>
                     {strategyLoading ? (
-                      <div className="flex items-center gap-2 text-cyan-300/60 text-sm">
+                      <div className="flex items-center gap-2 text-cyan-300/60 text-xs sm:text-sm">
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         جاري التحميل...
                       </div>
                     ) : strategyInfo?.strategyId ? (
                       <code
                         dir="ltr"
-                        className="block font-mono text-xs text-cyan-100 bg-black/40 px-3 py-2 rounded border border-cyan-500/30 break-all"
+                        className="block font-mono text-[11px] sm:text-xs text-cyan-100 bg-black/40 px-3 py-2 rounded border border-cyan-500/30 break-all"
                       >
                         {strategyInfo.strategyId}
                       </code>
@@ -437,9 +440,9 @@ export function CopyfactoryLoginScreen() {
                     )}
                   </div>
 
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+                  <div className="space-y-3 sm:space-y-4">
+                    <div className="space-y-1.5 sm:space-y-2">
+                      <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                         <KeyRound className="w-3.5 h-3.5" />
                         CopyFactory Subscriber ID
                       </Label>
@@ -450,8 +453,9 @@ export function CopyfactoryLoginScreen() {
                         onChange={(e) =>
                           setSubscriberId(e.target.value.trim())
                         }
-                        className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-11 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                        className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-xs sm:text-sm h-12 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                         disabled={loading}
+                        autoComplete="off"
                       />
                     </div>
                   </div>
@@ -460,7 +464,7 @@ export function CopyfactoryLoginScreen() {
             </AnimatePresence>
 
             {error && (
-              <div className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm">
+              <div className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs sm:text-sm">
                 <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
                 <span>{error}</span>
               </div>
@@ -470,7 +474,7 @@ export function CopyfactoryLoginScreen() {
             <button
               type="button"
               onClick={() => setShowHelp(!showHelp)}
-              className="mt-4 flex items-center gap-1.5 text-xs text-cyan-300 hover:text-cyan-200"
+              className="mt-4 flex items-center gap-1.5 text-[11px] sm:text-xs text-cyan-300 hover:text-cyan-200 active:scale-95"
             >
               <HelpCircle className="w-3.5 h-3.5" />
               {showHelp
@@ -482,7 +486,7 @@ export function CopyfactoryLoginScreen() {
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
-                className="mt-2 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20 text-xs text-blue-200/80 space-y-2"
+                className="mt-2 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20 text-[11px] sm:text-xs text-blue-200/80 space-y-2"
               >
                 <div>
                   <strong className="text-blue-300">1.</strong> افتح تطبيق
@@ -513,27 +517,31 @@ export function CopyfactoryLoginScreen() {
             <Button
               onClick={handleLogin}
               disabled={loading}
-              className="mt-5 w-full h-12 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-base neon-glow transition-all border-0"
+              className="mt-5 w-full h-12 sm:h-14 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm sm:text-base neon-glow transition-all border-0 active:scale-[0.98]"
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-5 h-5 ml-2 animate-spin" />
-                  {mode === "auto"
-                    ? "جاري إنشاء الحساب وربط الاستراتيجية..."
-                    : "جاري ربط الـ Subscriber..."}
+                  <Loader2 className="w-5 h-5 ml-2 animate-spin shrink-0" />
+                  <span className="text-xs sm:text-base">
+                    {mode === "auto"
+                      ? "جاري إنشاء الحساب وربط الاستراتيجية..."
+                      : "جاري ربط الـ Subscriber..."}
+                  </span>
                 </>
               ) : (
                 <>
-                  <Sparkles className="w-5 h-5 ml-2" />
-                  {mode === "auto" ? "ربط تلقائي وبدء النسخ" : "ربط وبدء التداول"}
-                  <ArrowRight className="w-5 h-5 mr-2" />
+                  <Sparkles className="w-5 h-5 ml-2 shrink-0" />
+                  <span className="text-xs sm:text-base">
+                    {mode === "auto" ? "ربط تلقائي وبدء النسخ" : "ربط وبدء التداول"}
+                  </span>
+                  <ArrowRight className="w-5 h-5 mr-2 shrink-0" />
                 </>
               )}
             </Button>
 
             {/* Reference: master account info */}
             {strategyInfo?.masterLogin && (
-              <div className="mt-4 text-center text-[11px] text-cyan-300/50">
+              <div className="mt-4 text-center text-[10px] sm:text-[11px] text-cyan-300/50">
                 Master MT5 Login:{" "}
                 <span className="font-mono text-cyan-200">
                   {strategyInfo.masterLogin}

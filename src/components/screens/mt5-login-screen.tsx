@@ -133,14 +133,14 @@ export function Mt5LoginScreen() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-8">
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 py-6 sm:p-4 md:p-8">
       {/* Compact header */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex items-center gap-4 mb-8"
+        className="flex items-center gap-3 sm:gap-4 mb-6 md:mb-8"
       >
-        <AlfaLogo size={56} />
+        <AlfaLogo size={48} />
         <AlfaWordmark subtitle={false} />
       </motion.div>
 
@@ -151,12 +151,12 @@ export function Mt5LoginScreen() {
         className="w-full max-w-md"
       >
         <Card className="glass-panel neon-border-soft rounded-2xl scanline relative">
-          <CardContent className="p-6 md:p-8">
+          <CardContent className="p-4 sm:p-6 md:p-8">
             {/* Status row */}
-            <div className="flex items-center justify-between mb-6 pb-4 border-b border-cyan-500/20">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-xs text-cyan-200/70">
+            <div className="flex items-center justify-between mb-5 md:mb-6 pb-3 md:pb-4 border-b border-cyan-500/20 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse shrink-0" />
+                <span className="text-[11px] sm:text-xs text-cyan-200/70 truncate">
                   الكود مفعّل — متبقي{" "}
                   <span className="text-cyan-300 font-bold">
                     {activation.expiresAt
@@ -170,10 +170,10 @@ export function Mt5LoginScreen() {
                   </span>
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                 <Badge
                   variant="outline"
-                  className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[10px]"
+                  className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[9px] sm:text-[10px] px-2"
                 >
                   STEP 2 / 3
                 </Badge>
@@ -181,41 +181,44 @@ export function Mt5LoginScreen() {
                   type="button"
                   onClick={handleBack}
                   title="خروج وإدخال كود جديد"
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-400 text-[11px] font-bold transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-400 text-[10px] sm:text-[11px] font-bold transition-colors active:scale-95"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>خروج</span>
+                  <span className="hidden sm:inline">خروج</span>
                 </button>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 mb-6">
+            <div className="flex items-center gap-2 mb-4 md:mb-6">
               <LogIn className="w-5 h-5 text-cyan-400" />
-              <h2 className="text-lg font-bold text-white">تسجيل الدخول إلى MT5</h2>
+              <h2 className="text-base sm:text-lg font-bold text-white">تسجيل الدخول إلى MT5</h2>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-3 sm:space-y-4">
               {/* MT5 ID */}
-              <div className="space-y-2">
-                <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+              <div className="space-y-1.5 sm:space-y-2">
+                <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                   <User className="w-3.5 h-3.5" />
                   MT5 ID — رقم الحساب
                 </Label>
                 <Input
                   dir="ltr"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   placeholder="12345678"
                   value={mt5Login}
                   onChange={(e) =>
                     setMt5Login(e.target.value.replace(/[^0-9]/g, ""))
                   }
-                  className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-lg h-11 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                  className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-base sm:text-lg h-12 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                   disabled={loading}
+                  autoComplete="username"
                 />
               </div>
 
               {/* MT5 Password */}
-              <div className="space-y-2">
-                <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+              <div className="space-y-1.5 sm:space-y-2">
+                <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                   <KeyRound className="w-3.5 h-3.5" />
                   MT5 Password — كلمة المرور
                 </Label>
@@ -226,13 +229,14 @@ export function Mt5LoginScreen() {
                     placeholder="••••••••"
                     value={mt5Password}
                     onChange={(e) => setMt5Password(e.target.value)}
-                    className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono h-11 pr-10 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                    className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono h-12 pr-10 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                     disabled={loading}
+                    autoComplete="current-password"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-cyan-400/60 hover:text-cyan-300 p-1"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-cyan-400/60 hover:text-cyan-300 p-1.5"
                     tabIndex={-1}
                   >
                     {showPassword ? (
@@ -245,8 +249,8 @@ export function Mt5LoginScreen() {
               </div>
 
               {/* MT5 Server */}
-              <div className="space-y-2">
-                <Label className="text-cyan-100 text-sm flex items-center gap-1.5">
+              <div className="space-y-1.5 sm:space-y-2">
+                <Label className="text-cyan-100 text-xs sm:text-sm flex items-center gap-1.5">
                   <Server className="w-3.5 h-3.5" />
                   MT5 Server — السيرفر
                 </Label>
@@ -256,8 +260,9 @@ export function Mt5LoginScreen() {
                   value={mt5Server}
                   onChange={(e) => setMt5Server(e.target.value)}
                   list="mt5-servers"
-                  className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono h-11 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                  className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono text-sm h-12 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                   disabled={loading}
+                  autoComplete="off"
                 />
                 <datalist id="mt5-servers">
                   {COMMON_SERVERS.map((s) => (
@@ -267,13 +272,13 @@ export function Mt5LoginScreen() {
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm">
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs sm:text-sm">
                   <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
                   <span>{error}</span>
                 </div>
               )}
 
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-cyan-200/70 text-xs leading-relaxed">
+              <div className="flex items-start gap-2 p-2.5 sm:p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-cyan-200/70 text-[11px] sm:text-xs leading-relaxed">
                 <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-cyan-400" />
                 <span>
                   بيانات MT5 تُرسَل بأمان إلى MetaAPI Cloud لربط حسابك. كلمة المرور
@@ -286,12 +291,12 @@ export function Mt5LoginScreen() {
               <Button
                 onClick={handleLogin}
                 disabled={loading}
-                className="w-full h-12 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-base neon-glow transition-all border-0"
+                className="w-full h-12 sm:h-14 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm sm:text-base neon-glow transition-all border-0 active:scale-[0.98]"
               >
                 {loading ? (
                   <>
                     <Loader2 className="w-5 h-5 ml-2 animate-spin" />
-                    جاري الاتصال بـ MT5...
+                    <span className="text-xs sm:text-base">جاري الاتصال بـ MT5...</span>
                   </>
                 ) : (
                   <>
@@ -313,10 +318,10 @@ export function Mt5LoginScreen() {
               {/* CopyFactory alternative */}
               <button
                 onClick={() => useAppStore.getState().setStage("copyfactory-login")}
-                className="w-full h-11 rounded-md border border-green-500/40 bg-green-500/10 text-green-300 hover:bg-green-500/20 hover:border-green-400 text-sm font-bold transition-colors flex items-center justify-center gap-2"
+                className="w-full h-12 rounded-md border border-green-500/40 bg-green-500/10 text-green-300 hover:bg-green-500/20 hover:border-green-400 text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-2 active:scale-[0.98] px-2"
               >
-                <ShieldCheck className="w-4 h-4" />
-                ربط عبر CopyFactory (بدون مشاركة كلمة مرور MT5)
+                <ShieldCheck className="w-4 h-4 shrink-0" />
+                <span>ربط عبر CopyFactory</span>
               </button>
             </div>
           </CardContent>

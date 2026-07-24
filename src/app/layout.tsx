@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -26,8 +26,28 @@ export const metadata: Metadata = {
     "XAUUSD",
   ],
   authors: [{ name: "ALFA Reports" }],
+  manifest: "/manifest.json",
   icons: {
-    icon: "/logo.svg",
+    icon: [
+      { url: "/logo.svg", type: "image/svg+xml" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "ALFA Reports",
+    statusBarStyle: "black-translucent",
+    startupImage: ["/icon-512.png"],
+  },
+  formatDetection: {
+    telephone: false,
+    email: false,
+    address: false,
   },
   openGraph: {
     title: "ALFA Reports — Automated MT5 Trading Bot",
@@ -38,6 +58,18 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#05070d" },
+    { media: "(prefers-color-scheme: light)", color: "#05070d" },
+  ],
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -46,7 +78,7 @@ export default function RootLayout({
   return (
     <html lang="ar" dir="rtl" suppressHydrationWarning className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground overscroll-none`}
       >
         {children}
         <Toaster />

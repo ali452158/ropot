@@ -1,0 +1,48 @@
+{
+  "name": "ALFA Reports — MT5 Trading Bot",
+  "short_name": "ALFA Reports",
+  "description": "بوت تداول آلي للمتاجرة في الذهب (XAUUSD) باستراتيجية تسليم الأذيل على فريم M1 — تنفيذ لحظي صاروخي.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#05070d",
+  "theme_color": "#00e5ff",
+  "categories": ["finance", "productivity", "business"],
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "تسجيل الدخول إلى MT5",
+      "short_name": "MT5",
+      "url": "/?stage=mt5-login",
+      "description": "ادخل بيانات حساب MT5 مباشرة"
+    },
+    {
+      "name": "تفعيل الكود",
+      "short_name": "تفعيل",
+      "url": "/?stage=activation",
+      "description": "تفعيل كود اشتراك جديد"
+    }
+  ]
+}

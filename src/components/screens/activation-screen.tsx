@@ -74,15 +74,15 @@ export function ActivationScreen() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-8">
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 py-6 sm:p-4 md:p-8">
       {/* Hero header with robot mascot */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
-        className="w-full max-w-4xl mb-8"
+        className="w-full max-w-4xl mb-6 md:mb-8"
       >
-        <div className="flex flex-col md:flex-row items-center gap-6 md:gap-10">
+        <div className="flex flex-col md:flex-row items-center gap-4 md:gap-10">
           {/* Robot mascot image */}
           <motion.div
             initial={{ opacity: 0, scale: 0.8, rotate: -8 }}
@@ -94,11 +94,11 @@ export function ActivationScreen() {
             <img
               src="/alfa-robot.png"
               alt="ALFA Trading Robot"
-              className="relative w-40 h-40 md:w-52 md:h-52 object-cover rounded-2xl neon-border-soft"
+              className="relative w-28 h-28 sm:w-36 sm:h-36 md:w-52 md:h-52 object-cover rounded-2xl neon-border-soft"
               style={{ filter: "drop-shadow(0 0 25px rgba(0, 229, 255, 0.45))" }}
             />
             {/* Status badge floating on robot */}
-            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/80 border border-cyan-400/50 text-cyan-300 text-[10px] font-mono whitespace-nowrap">
+            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-2 py-0.5 md:px-3 md:py-1 rounded-full bg-black/80 border border-cyan-400/50 text-cyan-300 text-[9px] md:text-[10px] font-mono whitespace-nowrap">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 ml-1.5 animate-pulse" />
               AI ONLINE
             </div>
@@ -106,11 +106,11 @@ export function ActivationScreen() {
 
           {/* Title block */}
           <div className="flex flex-col items-center md:items-start text-center md:text-right">
-            <div className="mb-3">
-              <AlfaLogo size={64} />
+            <div className="mb-2 md:mb-3">
+              <AlfaLogo size={48} />
             </div>
             <AlfaWordmark />
-            <p className="mt-3 text-sm md:text-base text-cyan-100/80 max-w-md leading-relaxed">
+            <p className="mt-2 md:mt-3 text-xs sm:text-sm md:text-base text-cyan-100/80 max-w-md leading-relaxed">
               بوت تداول آلي للمتاجرة في الذهب (XAUUSD) باستراتيجية{" "}
               <span className="neon-text-soft font-semibold">تسليم الأذيل</span> على
               فريم M1 — تنفيذ لحظي صاروخي.
@@ -119,12 +119,12 @@ export function ActivationScreen() {
         </div>
       </motion.div>
 
-      {/* Bot showcase image (candle chart) */}
+      {/* Bot showcase image (candle chart) — hidden on small phones to save vertical space */}
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.6, delay: 0.2 }}
-        className="mb-8 w-full max-w-3xl"
+        className="hidden sm:block mb-6 md:mb-8 w-full max-w-3xl"
       >
         <BotShowcase />
       </motion.div>
@@ -137,15 +137,15 @@ export function ActivationScreen() {
         className="w-full max-w-md"
       >
         <Card className="glass-panel neon-border-soft rounded-2xl overflow-hidden scanline relative">
-          <CardContent className="p-6 md:p-8">
-            <div className="flex items-center justify-between mb-5">
+          <CardContent className="p-4 sm:p-6 md:p-8">
+            <div className="flex items-center justify-between mb-4 md:mb-5">
               <div className="flex items-center gap-2">
                 <KeyRound className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-lg font-bold text-white">تفعيل الاشتراك</h2>
+                <h2 className="text-base sm:text-lg font-bold text-white">تفعيل الاشتراك</h2>
               </div>
               <Badge
                 variant="outline"
-                className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10"
+                className="border-cyan-400/40 text-cyan-300 bg-cyan-500/10 text-[10px] sm:text-xs"
               >
                 <Lock className="w-3 h-3 ml-1" />
                 اشتراك شهري
@@ -153,7 +153,7 @@ export function ActivationScreen() {
             </div>
 
             <div className="space-y-2 mb-4">
-              <Label htmlFor="code" className="text-cyan-100 text-sm">
+              <Label htmlFor="code" className="text-cyan-100 text-xs sm:text-sm">
                 كود التفعيل
               </Label>
               <Input
@@ -163,10 +163,13 @@ export function ActivationScreen() {
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
                 onKeyDown={(e) => e.key === "Enter" && handleVerify()}
-                className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono tracking-wider text-center text-lg h-12 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
+                className="bg-black/40 border-cyan-500/30 text-cyan-50 placeholder:text-cyan-700/50 font-mono tracking-wider text-center text-base sm:text-lg h-12 sm:h-14 focus-visible:border-cyan-400 focus-visible:ring-cyan-400/30"
                 disabled={loading}
+                inputMode="text"
+                autoCapitalize="characters"
+                autoComplete="off"
               />
-              <p className="text-xs text-cyan-200/60 leading-relaxed">
+              <p className="text-[11px] sm:text-xs text-cyan-200/60 leading-relaxed">
                 أدخل الكود الذي استلمته من بوت تلجرام. كل كود يعمل على جهاز واحد
                 فقط لمدة 30 يوماً.
               </p>
@@ -182,7 +185,7 @@ export function ActivationScreen() {
             <Button
               onClick={handleVerify}
               disabled={loading}
-              className="w-full h-12 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-base neon-glow transition-all border-0"
+              className="w-full h-12 sm:h-14 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-base neon-glow transition-all border-0 active:scale-[0.98]"
             >
               {loading ? (
                 <>
@@ -198,7 +201,7 @@ export function ActivationScreen() {
             </Button>
 
             {/* Feature pills */}
-            <div className="grid grid-cols-3 gap-2 mt-6">
+            <div className="grid grid-cols-3 gap-2 mt-5 md:mt-6">
               <FeaturePill icon={<Zap className="w-3.5 h-3.5" />} text="تنفيذ لحظي" />
               <FeaturePill icon={<Cpu className="w-3.5 h-3.5" />} text="MT5 حقيقي" />
               <FeaturePill icon={<Clock className="w-3.5 h-3.5" />} text="30 يوماً" />
@@ -206,7 +209,7 @@ export function ActivationScreen() {
           </CardContent>
         </Card>
 
-        <p className="text-center text-xs text-cyan-200/40 mt-4 flex items-center justify-center gap-1.5">
+        <p className="text-center text-[11px] sm:text-xs text-cyan-200/40 mt-4 flex items-center justify-center gap-1.5">
           <Sparkles className="w-3 h-3" />
           ALFA Reports — استثمارك الذكي في سوق الذهب
         </p>
@@ -217,7 +220,7 @@ export function ActivationScreen() {
 
 function FeaturePill({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
-    <div className="flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-cyan-200/80 text-[11px]">
+    <div className="flex items-center justify-center gap-1 py-1.5 sm:py-2 px-1 sm:px-2 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-cyan-200/80 text-[10px] sm:text-[11px]">
       {icon}
       {text}
     </div>
