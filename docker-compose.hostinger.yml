@@ -1,9 +1,15 @@
 # ============================================================
 # ALFA Reports — docker-compose.yml (Hostinger VPS, no Traefik)
 # ============================================================
-# Standalone version — no Traefik proxy needed.
-# The container runs on port 3000 directly.
-# DNS section added to fix MetaApi hostname resolution.
+# Two services:
+#   1. alfa       — Next.js web app on port 3000
+#   2. alfa-bot   — Telegram long-polling bot (sidecar)
+#
+# Both share the same Docker image (built once). The bot service
+# overrides the CMD to run the polling-bot.mjs script instead of the
+# Next.js server.
+#
+# DNS section fixes MetaApi hostname resolution in some Docker setups.
 # ============================================================
 
 services:
@@ -29,6 +35,41 @@ services:
     volumes:
       # Persist SQLite DB across container restarts
       - alfa_db:/app/db
+    networks:
+      - alfa-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/system/mode"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  alfa-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alfa-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 8.8.4.4
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:/app/db/custom.db
+      # The bot talks to the web app via HTTP on the internal network
+      - ALFA_API_BASE=http://alfa:3000
+    # Override CMD: run migrations is NOT needed (the web app already did them),
+    # so we just start the bot directly. The bot was compiled by tsc to
+    # dist/bot-compiled/bot/polling-bot.js.
+    command: ["node", "/app/dist/bot-compiled/bot/polling-bot.js"]
+    depends_on:
+      - alfa
+    volumes:
+      # Share the DB volume so the bot can read codes if needed (read-only).
+      - alfa_db:/app/db:ro
     networks:
       - alfa-net
 
