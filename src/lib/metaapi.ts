@@ -783,6 +783,102 @@ export function listProvisionedLogins(): string[] {
   return Array.from(accountCache.keys());
 }
 
+/**
+ * Symbol resolver — different brokers use different suffixes for the same
+ * instrument (Exness: XAUUSDm / XAUUSD# / GOLDm, ICMarkets: XAUUSD-r,
+ * Pepperstone: XAUUSD-r, FTMO: XAUUSD.s, FXTM: XAUUSDm, etc.). MetaApi
+ * forwards the symbol name as-is, so we must map the canonical name
+ * (XAUUSD, EURUSD, ...) to whatever the subscriber's broker actually
+ * exposes.
+ *
+ * Strategy:
+ *   1. Try the requested symbol as-is (some brokers accept it natively).
+ *   2. If 404 / not-found, list ALL symbols on the account via
+ *      /users/current/accounts/{id}/symbols and find the first symbol
+ *      whose name STARTS WITH the requested base (case-insensitive).
+ *   3. Cache the result per (mt5Login, baseSymbol) so we only do the
+ *      discovery once per account.
+ */
+const symbolResolveCache = new Map<string, string>(); // key: `${mt5Login}:${base}` -> brokerSymbol
+
+async function resolveBrokerSymbol(
+  mt5Login: string,
+  requestedSymbol: string
+): Promise<string> {
+  const cacheKey = `${mt5Login}:${requestedSymbol}`;
+  const cached = symbolResolveCache.get(cacheKey);
+  if (cached) return cached;
+
+  const id = accountCache.get(mt5Login);
+  if (!id) return requestedSymbol; // can't resolve without account id
+
+  // Step 1: probe the requested symbol directly via the symbol-info endpoint.
+  try {
+    const probe = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/symbols/${encodeURIComponent(requestedSymbol)}`
+    );
+    if (probe.ok) {
+      symbolResolveCache.set(cacheKey, requestedSymbol);
+      return requestedSymbol;
+    }
+  } catch {
+    // fall through to discovery
+  }
+
+  // Step 2: discover available symbols and find the closest match.
+  try {
+    const res = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/symbols`
+    );
+    if (res.ok) {
+      const d = await res.json();
+      const symbols: string[] = (d.symbols || d || []).map((s: any) =>
+        typeof s === "string" ? s : s?.name
+      ).filter(Boolean);
+
+      const base = requestedSymbol.toUpperCase();
+      // Priority 1: exact match (case-insensitive)
+      const exact = symbols.find((s) => s.toUpperCase() === base);
+      if (exact) {
+        symbolResolveCache.set(cacheKey, exact);
+        return exact;
+      }
+      // Priority 2: symbol STARTS WITH base (e.g. XAUUSDm starts with XAUUSD)
+      const startsWith = symbols.find(
+        (s) => s.toUpperCase().startsWith(base) && s.length <= base.length + 4
+      );
+      if (startsWith) {
+        symbolResolveCache.set(cacheKey, startsWith);
+        console.log(
+          `[metaapi] Symbol resolved: ${requestedSymbol} → ${startsWith} (login ${mt5Login})`
+        );
+        return startsWith;
+      }
+      // Priority 3: symbol CONTAINS base (e.g. XAUUSD.m contains XAUUSD)
+      const contains = symbols.find((s) =>
+        s.toUpperCase().includes(base)
+      );
+      if (contains) {
+        symbolResolveCache.set(cacheKey, contains);
+        console.log(
+          `[metaapi] Symbol resolved: ${requestedSymbol} → ${contains} (login ${mt5Login})`
+        );
+        return contains;
+      }
+    }
+  } catch {
+    // ignore — fall back to requested symbol
+  }
+
+  // Fallback: return as-is and let the order fail with a clear error
+  console.warn(
+    `[metaapi] Could not resolve symbol ${requestedSymbol} for login ${mt5Login}; using as-is`
+  );
+  return requestedSymbol;
+}
+
 export async function createMarketOrder(
   mt5Login: string,
   symbol: string,
@@ -799,13 +895,17 @@ export async function createMarketOrder(
   }
   const id = accountCache.get(mt5Login);
   if (!id) return { ok: false, error: "Account not provisioned" };
+
+  // Resolve the broker-specific symbol name (XAUUSD → XAUUSDm on Exness, etc.)
+  const brokerSymbol = await resolveBrokerSymbol(mt5Login, symbol);
+
   try {
     const res = await metaApiFetch("client", `/users/current/accounts/${id}/trade`, {
       method: "POST",
       body: JSON.stringify({
         actionType:
           direction === "BUY" ? "ORDER_TYPE_BUY" : "ORDER_TYPE_SELL",
-        symbol,
+        symbol: brokerSymbol,
         volume,
         stopLoss,
         takeProfit,
@@ -813,7 +913,12 @@ export async function createMarketOrder(
       }),
     });
     if (!res.ok) {
-      return { ok: false, error: `Order failed: ${res.status}` };
+      let errBody = "";
+      try { errBody = await res.text(); } catch {}
+      console.error(
+        `[metaapi] Order failed: ${res.status} symbol=${brokerSymbol} body=${errBody.slice(0, 200)}`
+      );
+      return { ok: false, error: `Order failed: ${res.status} ${errBody.slice(0, 120)}` };
     }
     const d = await res.json();
     return { ok: true, orderId: d.orderId || d.positionId };
