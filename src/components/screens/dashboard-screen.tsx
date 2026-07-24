@@ -57,6 +57,10 @@ const FOREX_SYMBOLS = [
   { value: "EURAUD", label: "EURAUD — اليورو/أسترالي" },
   { value: "AUDJPY", label: "AUDJPY — الأسترالي/ين" },
 ];
+// NOTE: These are canonical (base) symbol names. The bot auto-resolves the
+// broker-specific variant (e.g. XAUUSD → XAUUSDm on Exness, XAUUSD-r on
+// ICMarkets, etc.) at order time via resolveBrokerSymbol() in metaapi.ts.
+// So users can safely pick "XAUUSD" even if their broker uses "XAUUSDm".
 
 const TIMEFRAMES = [
   { value: "M1", label: "M1 — دقيقة (موصى به)" },
