@@ -260,9 +260,13 @@ export function DashboardScreen() {
     refreshMarket();
     refreshAccount();
     runDiagnostic();
-    const statusTimer = setInterval(refreshStatus, 2000);
-    const marketTimer = setInterval(refreshMarket, 1000);
-    const accountTimer = setInterval(refreshAccount, 5000);
+    // Polling intervals — kept gentle to avoid hammering the server (each
+    // poll triggers 2-3 SQL queries + a MetaApi market-data call). The bot
+    // loop runs at 500-1000ms independently on the server; the dashboard
+    // only needs to REFLECT that state, not drive it.
+    const statusTimer = setInterval(refreshStatus, 3000);
+    const marketTimer = setInterval(refreshMarket, 3000);
+    const accountTimer = setInterval(refreshAccount, 10000);
     return () => {
       clearInterval(statusTimer);
       clearInterval(marketTimer);
