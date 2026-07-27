@@ -94,6 +94,10 @@ model BotConfig {
 
   // === Risk / position-management fields ===
   // Maximum number of concurrent open trades the bot can hold (HF mode).
+  // NOTE: in the new batch-entry model, the bot opens `batchSize` trades at
+  // once and waits for ALL of them to close before opening the next batch.
+  // `maxOpenPositions` is kept as a hard ceiling so the bot can never exceed
+  // this many simultaneous positions even if external positions exist.
   maxOpenPositions Int     @default(3)
   // Number of consecutive losing trades that triggers the auto-stop safety
   // ("السوق غير مستقر الآن"). Once hit, the bot stops itself.
@@ -103,6 +107,37 @@ model BotConfig {
   // Flag set when the bot auto-stopped due to instability. Cleared on next
   // manual start.
   instabilityStop  Boolean @default(false)
+
+  // === PYRAMID STRATEGY (new model — replaces batch-entry + candle-count) ===
+  //
+  // The bot opens 2 "anchor" trades on a qualifying signal. Each anchor
+  // trade has SL = slPips pips and TP = 3 × slPips pips (i.e. tpPips is
+  // computed as 3 × slPips at entry time and stored on the Trade row).
+  //
+  // As price moves in the trade direction, when ANY existing trade's
+  // floating profit reaches `pyramidProfitUsd` (default $2), the bot opens
+  // ONE more trade in the same direction with the same SL/TP rules. This
+  // continues until `pyramidMaxTrades` (default 6) trades are open.
+  //
+  // Exit rules:
+  //   - Each trade closes independently when its own TP is hit.
+  //   - If price reverses and hits the SHARED anchor SL (the SL of the
+  //     first 2 anchor trades), ALL open trades close immediately.
+  //   - On full close (all trades exit), the bot re-evaluates for the next
+  //     pyramid signal.
+  //
+  // pyramidProfitUsd: floating profit (USD) at which to add one more trade.
+  //                  Default $2.
+  // pyramidMaxTrades: max simultaneous trades in a pyramid. Default 6.
+  // pyramidAnchorCount: how many trades to open on the initial signal.
+  //                    Default 2.
+  pyramidProfitUsd    Float    @default(2.0)
+  pyramidMaxTrades    Int      @default(6)
+  pyramidAnchorCount  Int      @default(2)
+  // lastPyramidCandleTime: ISO time of the last M1 candle that triggered a
+  //                       pyramid entry (avoids opening 2 pyramids on the
+  //                       same candle).
+  lastPyramidCandleTime String?
 
   // === Trailing Strategy fields (kept for the trailing-stop engine) ===
   strategyType    String   @default("trailing")

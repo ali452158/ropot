@@ -46,6 +46,13 @@ export type BotConfigState = {
   lastLossStreak: number;
   /** True when the bot auto-stopped itself due to instability. */
   instabilityStop: boolean;
+  // === Pyramid strategy fields ===
+  /** Floating USD profit at which to add one more trade to the pyramid. */
+  pyramidProfitUsd: number;
+  /** Max simultaneous trades in a pyramid. */
+  pyramidMaxTrades: number;
+  /** How many trades to open on the initial pyramid signal. */
+  pyramidAnchorCount: number;
   // === Trailing strategy fields (server-side only; UI doesn't expose these) ===
   strategyType: "trailing" | "wick";
   autoPairScan: boolean;
@@ -142,6 +149,10 @@ const defaultBotConfig: BotConfigState = {
   maxLossStreak: 5,
   lastLossStreak: 0,
   instabilityStop: false,
+  // === Pyramid strategy defaults ===
+  pyramidProfitUsd: 2.0,
+  pyramidMaxTrades: 6,
+  pyramidAnchorCount: 2,
   // === Trailing defaults (kept for the engine; not exposed in the simplified UI) ===
   strategyType: "trailing",
   autoPairScan: false,

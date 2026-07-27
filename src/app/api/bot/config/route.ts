@@ -41,6 +41,10 @@ export async function GET(req: NextRequest) {
           maxLossStreak: 5,
           lastLossStreak: 0,
           instabilityStop: false,
+          // Pyramid-strategy defaults:
+          pyramidProfitUsd: 2.0,
+          pyramidMaxTrades: 6,
+          pyramidAnchorCount: 2,
           // Trailing-strategy defaults:
           strategyType: "trailing",
           autoPairScan: false,
@@ -90,6 +94,10 @@ export async function POST(req: NextRequest) {
       "tradeDirection",
       "maxOpenPositions",
       "maxLossStreak",
+      // Pyramid-strategy fields (user-selected):
+      "pyramidProfitUsd",
+      "pyramidMaxTrades",
+      "pyramidAnchorCount",
       // Engine-managed fields (server updates these; user cannot set directly):
       "lastLossStreak",
       "instabilityStop",
@@ -132,6 +140,10 @@ export async function POST(req: NextRequest) {
         maxLossStreak: patch.maxLossStreak ?? 5,
         lastLossStreak: patch.lastLossStreak ?? 0,
         instabilityStop: patch.instabilityStop ?? false,
+        // Pyramid-strategy:
+        pyramidProfitUsd: patch.pyramidProfitUsd ?? 2.0,
+        pyramidMaxTrades: patch.pyramidMaxTrades ?? 6,
+        pyramidAnchorCount: patch.pyramidAnchorCount ?? 2,
         strategyType: patch.strategyType ?? "trailing",
         autoPairScan: patch.autoPairScan ?? false,
         scanSymbols: patch.scanSymbols ?? "XAUUSD",

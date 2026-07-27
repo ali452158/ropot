@@ -107,6 +107,10 @@ export function DashboardScreen() {
           maxLossStreak: cfgData.config.maxLossStreak,
           lastLossStreak: cfgData.config.lastLossStreak,
           instabilityStop: cfgData.config.instabilityStop,
+          // Pyramid strategy fields
+          pyramidProfitUsd: cfgData.config.pyramidProfitUsd ?? 2.0,
+          pyramidMaxTrades: cfgData.config.pyramidMaxTrades ?? 6,
+          pyramidAnchorCount: cfgData.config.pyramidAnchorCount ?? 2,
           botRunning: cfgData.config.botRunning,
           botStartedAt: cfgData.config.botStartedAt,
         });
@@ -529,10 +533,82 @@ export function DashboardScreen() {
                 />
               </div>
               <p className="text-[10px] sm:text-[11px] text-cyan-200/60 leading-relaxed">
-                يأخذ صفقة عند كل شمعة مغلقة بعد تلامس الذيل. حد أقصى {botConfig.maxOpenPositions} صفقات
-                مفتوحة، كل صفقة تُغلق بعد دقيقة. الاتجاه محسوب على فريم دقيقة.
+                يفتح <b className="text-cyan-200">{botConfig.pyramidAnchorCount} صفقات أولية</b> عند
+                اكتمال شمعة بشروط الدخول، مع ستوب وهدف (الهدف = 3× الاستوب). كلما ربحت أي صفقة
+                <b className="text-cyan-200"> ${botConfig.pyramidProfitUsd}</b> يفتح صفقة إضافية بنفس
+                الاتجاه لحد {botConfig.pyramidMaxTrades} صفقات. لو عكس السعر وضرب استوب أول صفقتين
+                يغلق كل الصفقات تلقائياً.
               </p>
             </div>
+
+            {/* Pyramid parameters */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
+                <div className="text-[10px] text-cyan-200/60 mb-1">صفقات أولية</div>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3}
+                  step={1}
+                  value={botConfig.pyramidAnchorCount}
+                  onChange={(e) =>
+                    setBotConfig({
+                      pyramidAnchorCount: Math.max(1, Math.min(3, Number(e.target.value) || 1)),
+                    })
+                  }
+                  onBlur={(e) =>
+                    updateConfig({ pyramidAnchorCount: Number(e.target.value) || 2 })
+                  }
+                  disabled={botConfig.botRunning}
+                  className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
+                />
+              </div>
+              <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
+                <div className="text-[10px] text-cyan-200/60 mb-1">حد الصفقات</div>
+                <Input
+                  type="number"
+                  min={2}
+                  max={10}
+                  step={1}
+                  value={botConfig.pyramidMaxTrades}
+                  onChange={(e) =>
+                    setBotConfig({
+                      pyramidMaxTrades: Math.max(2, Math.min(10, Number(e.target.value) || 2)),
+                    })
+                  }
+                  onBlur={(e) =>
+                    updateConfig({ pyramidMaxTrades: Number(e.target.value) || 6 })
+                  }
+                  disabled={botConfig.botRunning}
+                  className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
+                />
+              </div>
+              <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
+                <div className="text-[10px] text-cyan-200/60 mb-1">ربح التدرج ($)</div>
+                <Input
+                  type="number"
+                  min={0.5}
+                  max={20}
+                  step={0.5}
+                  value={botConfig.pyramidProfitUsd}
+                  onChange={(e) =>
+                    setBotConfig({
+                      pyramidProfitUsd: Math.max(0.5, Math.min(20, Number(e.target.value) || 0.5)),
+                    })
+                  }
+                  onBlur={(e) =>
+                    updateConfig({ pyramidProfitUsd: Number(e.target.value) || 2 })
+                  }
+                  disabled={botConfig.botRunning}
+                  className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
+                />
+              </div>
+            </div>
+            <p className="text-[10px] text-cyan-200/40 leading-relaxed -mt-1">
+              صفقات أولية = عدد الصفقات اللي تفتح عند الإشارة. حد الصفقات = أقصى عدد للصفقات
+              المفتوحة في الهرم. ربح التدرج = كل ما ربحت أي صفقة هذا المبلغ يفتح صفقة جديدة.
+              الهدف دائماً 3× الاستوب. ضرب استوب الصفقات الأولى يغلق كل الصفقات.
+            </p>
 
             {/* Loss-streak counter (display only) */}
             <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2.5 flex items-center justify-between">
