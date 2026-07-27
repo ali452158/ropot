@@ -257,7 +257,9 @@ async function handleList(): Promise<CommandResult> {
 
 async function handleStatus(): Promise<CommandResult> {
   const me = await getMe();
-  const adminIds = (process.env.TELEGRAM_ADMIN_IDS || "")
+  const adminIds = [process.env.TELEGRAM_ADMIN_IDS, process.env.ADMIN_TELEGRAM_ID]
+    .filter(Boolean)
+    .join(",")
     .split(/[,\s]+/)
     .filter(Boolean)
     .join(", ");
@@ -385,7 +387,9 @@ async function main() {
   await deleteWebhook();
   console.log("[ALFA Bot] Webhook deleted (if any).");
 
-  const adminIds = (process.env.TELEGRAM_ADMIN_IDS || "")
+  const adminIds = [process.env.TELEGRAM_ADMIN_IDS, process.env.ADMIN_TELEGRAM_ID]
+    .filter(Boolean)
+    .join(",")
     .split(/[,\s]+/)
     .filter(Boolean)
     .join(", ");

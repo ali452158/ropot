@@ -224,9 +224,14 @@ export async function getMe(): Promise<{
  *
  * Admin IDs come from env var TELEGRAM_ADMIN_IDS — comma-separated list of
  * numeric Telegram user IDs (e.g. "2021972361,123456789").
+ *
+ * Backward-compat: also reads ADMIN_TELEGRAM_ID (singular, from older
+ * deployments) and merges both into a single set.
  */
 export function isAdmin(userId: number): boolean {
-  const raw = process.env.TELEGRAM_ADMIN_IDS || "";
+  const raw = [process.env.TELEGRAM_ADMIN_IDS, process.env.ADMIN_TELEGRAM_ID]
+    .filter(Boolean)
+    .join(",");
   const ids = raw
     .split(/[,\s]+/)
     .map((s) => s.trim())
