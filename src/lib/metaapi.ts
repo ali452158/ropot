@@ -166,16 +166,31 @@ export const metaApiAgent = new https.Agent({
  * provisioning API for the current client-API domain (cached 10 min, mirroring
  * the official metaapi.cloud-sdk behavior).
  */
-async function pickHost(kind: "provision" | "client"): Promise<string> {
+// ---- Cloud-g2 host kinds ----
+// For "cloud-g2" accounts (the modern account type), MetaApi splits traffic
+// across THREE different hosts:
+//   1. mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai  → account CRUD (create/list/delete)
+//   2. mt-client-api-v1.{region}.{domain}                    → account info, trade, positions, symbol specs, per-symbol current-price
+//   3. mt-market-data-client-api-v1.{region}.{domain}        → historical candles + historical ticks (DIFFERENT host!)
+//
+// The legacy `cloud` account type used a single host with /historical-candles/{sym}/{tf},
+// but that path returns 404 on cloud-g2 accounts — they require the
+// /historical-market-data/symbols/{sym}/timeframes/{tf}/candles path AND the
+// market-data host.
+async function pickHost(kind: "provision" | "client" | "market-data"): Promise<string> {
   if (META_API_LEGACY_DOMAIN) return META_API_LEGACY_DOMAIN;
-  return kind === "provision"
-    ? META_API_PROVISIONING_DOMAIN
-    : await getClientDomain();
+  if (kind === "provision") return META_API_PROVISIONING_DOMAIN;
+  const dyn = await getDynamicClientDomain();
+  const base = dyn || "agiliumtrade.ai";
+  if (kind === "market-data") {
+    return `mt-market-data-client-api-v1.${META_API_CLIENT_REGION}.${base}`;
+  }
+  return `mt-client-api-v1.${META_API_CLIENT_REGION}.${base}`;
 }
 
 /** Shared fetch wrapper: injects auth header + permissive TLS dispatcher. */
 async function metaApiFetch(
-  kind: "provision" | "client",
+  kind: "provision" | "client" | "market-data",
   path: string,
   init: RequestInit & { method?: string } = {}
 ): Promise<Response> {
@@ -199,6 +214,7 @@ async function metaApiFetch(
 export function getMetaApiHosts(): {
   provisioning: string;
   client: string;
+  marketData: string;
   clientDynamic: string | null;
   legacy?: string;
   simulation: boolean;
@@ -206,6 +222,7 @@ export function getMetaApiHosts(): {
   return {
     provisioning: META_API_PROVISIONING_DOMAIN,
     client: META_API_CLIENT_DOMAIN_FALLBACK,
+    marketData: `mt-market-data-client-api-v1.${META_API_CLIENT_REGION}.agiliumtrade.ai`,
     clientDynamic: dynamicClientDomain,
     ...(META_API_LEGACY_DOMAIN ? { legacy: META_API_LEGACY_DOMAIN } : {}),
     simulation: SIMULATION,
@@ -720,24 +737,91 @@ export async function getCandles(
   // ALWAYS use the master account for market data.
   const id = (await getMasterMetaApiAccountId()) || accountCache.values().next().value;
   if (!id) return simulateCandles(symbol, limit);
+
+  // ---- Cloud-g2 path ----
+  // The historical-candles endpoint on cloud-g2 accounts lives on a SEPARATE
+  // host (mt-market-data-client-api-v1.{region}.{domain}) and uses a different
+  // URL pattern than legacy cloud accounts:
+  //   /users/current/accounts/{id}/historical-market-data/symbols/{symbol}/timeframes/{tf}/candles
+  // The old path /historical-candles/{sym}/{tf} returns 404 on cloud-g2.
+  //
+  // The cloud-g2 API uses LOWERCASE timeframe strings (1m, 5m, 1h, etc.) —
+  // MT5-style M1/M5/H1 are NOT accepted. We normalize here.
+  //
+  // The symbol must also be the BROKER-SPECIFIC name (e.g. XAUUSDm on Exness,
+  // not the canonical XAUUSD). We resolve it through the master account.
+  const masterLogin = getMasterLogin();
+  const brokerSymbol = masterLogin
+    ? await resolveBrokerSymbol(masterLogin, symbol)
+    : symbol;
+  const tfLower = normalizeTimeframe(timeframe);
   try {
     const res = await metaApiFetch(
-      "client",
-      `/users/current/accounts/${id}/historical-candles/${symbol}/${timeframe}?limit=${limit}`
+      "market-data",
+      `/users/current/accounts/${id}/historical-market-data/symbols/${encodeURIComponent(brokerSymbol)}/timeframes/${tfLower}/candles?limit=${limit}`
     );
-    if (!res.ok) return simulateCandles(symbol, limit);
-    const d = await res.json();
-    return (d.candles || []).map((c: any) => ({
-      time: c.time,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-      volume: c.volume,
-    }));
-  } catch {
+    if (res.ok) {
+      const arr = await res.json();
+      return (arr || []).map((c: any) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.tickVolume ?? c.volume ?? 0,
+      }));
+    }
+    // Fall back to legacy path for older cloud (non-g2) accounts.
+    const legacyRes = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/historical-candles/${encodeURIComponent(brokerSymbol)}/${timeframe}?limit=${limit}`
+    );
+    if (legacyRes.ok) {
+      const d = await legacyRes.json();
+      return (d.candles || []).map((c: any) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }));
+    }
+    console.warn(
+      `[metaapi] getCandles(${symbol}→${brokerSymbol}, ${timeframe}) failed: ${res.status} / ${legacyRes.status}`
+    );
+    return simulateCandles(symbol, limit);
+  } catch (e: any) {
+    console.warn(`[metaapi] getCandles error:`, e?.message);
     return simulateCandles(symbol, limit);
   }
+}
+
+/**
+ * Normalize a timeframe string to the lowercase format required by the
+ * cloud-g2 historical-market-data API.
+ *   "M1"  → "1m"
+ *   "M5"  → "5m"
+ *   "M15" → "15m"
+ *   "H1"  → "1h"
+ *   "1m"  → "1m" (already normalized)
+ */
+function normalizeTimeframe(tf: string): string {
+  const t = tf.trim().toLowerCase();
+  // If it's already in lowercase format (1m, 5m, 1h, etc.), return as-is.
+  if (/^[0-9]+[mh d w]$/.test(t.replace(/\s/g, ""))) return t.replace(/\s/g, "");
+  // MT5-style: M1, M5, M15, M30, H1, H4, D1, W1, MN
+  const m = t.match(/^([mhdw])(\d+)$/);
+  if (m) {
+    const unit = m[1];
+    const n = m[2];
+    if (unit === "m") return `${n}m`;
+    if (unit === "h") return `${n}h`;
+    if (unit === "d") return `1d`;
+    if (unit === "w") return `1w`;
+  }
+  // Default: return as-is (let the API reject if invalid)
+  return t;
 }
 
 export async function getCurrentPrice(
@@ -756,15 +840,42 @@ export async function getCurrentPrice(
   // ALWAYS use the master account for market data.
   const id = (await getMasterMetaApiAccountId()) || accountCache.values().next().value;
   if (!id) return null;
+
+  // ---- Cloud-g2 path ----
+  // The current-price endpoint on cloud-g2 accounts uses:
+  //   /users/current/accounts/{id}/symbols/{symbol}/current-price
+  // The old path /current-prices/{symbol} returns 404 on cloud-g2.
+  //
+  // The symbol must be the BROKER-SPECIFIC name (XAUUSDm, not XAUUSD) —
+  // we resolve it through the master account.
+  const masterLogin = getMasterLogin();
+  const brokerSymbol = masterLogin
+    ? await resolveBrokerSymbol(masterLogin, symbol)
+    : symbol;
   try {
     const res = await metaApiFetch(
       "client",
-      `/users/current/accounts/${id}/current-prices/${symbol}`
+      `/users/current/accounts/${id}/symbols/${encodeURIComponent(brokerSymbol)}/current-price`
     );
-    if (!res.ok) return null;
-    const d = await res.json();
-    return { symbol, bid: d.bid, ask: d.ask, time: d.time };
-  } catch {
+    if (res.ok) {
+      const d = await res.json();
+      return { symbol: brokerSymbol, bid: d.bid, ask: d.ask, time: d.time };
+    }
+    // Fall back to legacy path for older cloud (non-g2) accounts.
+    const legacyRes = await metaApiFetch(
+      "client",
+      `/users/current/accounts/${id}/current-prices/${encodeURIComponent(brokerSymbol)}`
+    );
+    if (legacyRes.ok) {
+      const d = await legacyRes.json();
+      return { symbol: brokerSymbol, bid: d.bid, ask: d.ask, time: d.time };
+    }
+    console.warn(
+      `[metaapi] getCurrentPrice(${symbol}→${brokerSymbol}) failed: ${res.status} / ${legacyRes.status}`
+    );
+    return null;
+  } catch (e: any) {
+    console.warn(`[metaapi] getCurrentPrice error:`, e?.message);
     return null;
   }
 }
@@ -812,64 +923,76 @@ async function resolveBrokerSymbol(
   const id = accountCache.get(mt5Login);
   if (!id) return requestedSymbol; // can't resolve without account id
 
-  // Step 1: probe the requested symbol directly via the symbol-info endpoint.
-  try {
-    const probe = await metaApiFetch(
-      "client",
-      `/users/current/accounts/${id}/symbols/${encodeURIComponent(requestedSymbol)}`
-    );
-    if (probe.ok) {
-      symbolResolveCache.set(cacheKey, requestedSymbol);
-      return requestedSymbol;
+  // NOTE: On cloud-g2 accounts, the per-symbol endpoint
+  // /users/current/accounts/{id}/symbols/{name} returns 404 — only the
+  // full /symbols list works. So we skip the probe and go straight to
+  // listing all symbols, then match by name.
+
+  // Cache the full symbols list per account (it's ~355 items, ~30KB).
+  const listCacheKey = `__list:${mt5Login}`;
+  let symbols: string[] | null = symbolResolveCache.get(listCacheKey) as any || null;
+  if (!symbols) {
+    try {
+      const res = await metaApiFetch(
+        "client",
+        `/users/current/accounts/${id}/symbols`
+      );
+      if (res.ok) {
+        const d = await res.json();
+        symbols = (d.symbols || d || []).map((s: any) =>
+          typeof s === "string" ? s : s?.name
+        ).filter(Boolean);
+        symbolResolveCache.set(listCacheKey, symbols as any);
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // fall through to discovery
+  }
+  if (!symbols || symbols.length === 0) {
+    // Last resort: try the per-symbol probe (works on legacy cloud accounts).
+    try {
+      const probe = await metaApiFetch(
+        "client",
+        `/users/current/accounts/${id}/symbols/${encodeURIComponent(requestedSymbol)}`
+      );
+      if (probe.ok) {
+        symbolResolveCache.set(cacheKey, requestedSymbol);
+        return requestedSymbol;
+      }
+    } catch {
+      // ignore
+    }
+    return requestedSymbol;
   }
 
-  // Step 2: discover available symbols and find the closest match.
-  try {
-    const res = await metaApiFetch(
-      "client",
-      `/users/current/accounts/${id}/symbols`
+  const base = requestedSymbol.toUpperCase();
+  // Priority 1: exact match (case-insensitive)
+  const exact = symbols.find((s) => s.toUpperCase() === base);
+  if (exact) {
+    symbolResolveCache.set(cacheKey, exact);
+    return exact;
+  }
+  // Priority 2: symbol STARTS WITH base (e.g. XAUUSDm starts with XAUUSD)
+  const startsWith = symbols.find(
+    (s) => s.toUpperCase().startsWith(base) && s.length <= base.length + 4
+  );
+  if (startsWith) {
+    symbolResolveCache.set(cacheKey, startsWith);
+    console.log(
+      `[metaapi] Symbol resolved: ${requestedSymbol} → ${startsWith} (login ${mt5Login})`
     );
-    if (res.ok) {
-      const d = await res.json();
-      const symbols: string[] = (d.symbols || d || []).map((s: any) =>
-        typeof s === "string" ? s : s?.name
-      ).filter(Boolean);
-
-      const base = requestedSymbol.toUpperCase();
-      // Priority 1: exact match (case-insensitive)
-      const exact = symbols.find((s) => s.toUpperCase() === base);
-      if (exact) {
-        symbolResolveCache.set(cacheKey, exact);
-        return exact;
-      }
-      // Priority 2: symbol STARTS WITH base (e.g. XAUUSDm starts with XAUUSD)
-      const startsWith = symbols.find(
-        (s) => s.toUpperCase().startsWith(base) && s.length <= base.length + 4
-      );
-      if (startsWith) {
-        symbolResolveCache.set(cacheKey, startsWith);
-        console.log(
-          `[metaapi] Symbol resolved: ${requestedSymbol} → ${startsWith} (login ${mt5Login})`
-        );
-        return startsWith;
-      }
-      // Priority 3: symbol CONTAINS base (e.g. XAUUSD.m contains XAUUSD)
-      const contains = symbols.find((s) =>
-        s.toUpperCase().includes(base)
-      );
-      if (contains) {
-        symbolResolveCache.set(cacheKey, contains);
-        console.log(
-          `[metaapi] Symbol resolved: ${requestedSymbol} → ${contains} (login ${mt5Login})`
-        );
-        return contains;
-      }
-    }
-  } catch {
-    // ignore — fall back to requested symbol
+    return startsWith;
+  }
+  // Priority 3: symbol CONTAINS base (e.g. XAUUSD.m contains XAUUSD)
+  const contains = symbols.find((s) =>
+    s.toUpperCase().includes(base)
+  );
+  if (contains) {
+    symbolResolveCache.set(cacheKey, contains);
+    console.log(
+      `[metaapi] Symbol resolved: ${requestedSymbol} → ${contains} (login ${mt5Login})`
+    );
+    return contains;
   }
 
   // Fallback: return as-is and let the order fail with a clear error

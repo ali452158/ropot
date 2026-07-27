@@ -88,6 +88,14 @@ export function DashboardScreen() {
   const [stopping, setStopping] = useState(false);
   const [candles, setCandles] = useState<any[]>([]);
   const [lastSignal, setLastSignal] = useState<string>("بانتظار إشارة...");
+  const [connectionIssue, setConnectionIssue] = useState<string | null>(null);
+  const [masterStatus, setMasterStatus] = useState<{
+    checked: boolean;
+    found: boolean;
+    deployed: boolean;
+    connected: boolean;
+    message: string;
+  } | null>(null);
 
   // Refresh status (trades + stats)
   const refreshStatus = useCallback(async () => {
@@ -139,27 +147,97 @@ export function DashboardScreen() {
       const mData = await modeRes.json();
       if (pData.ok) {
         setTickPrice({ bid: pData.tick.bid, ask: pData.tick.ask });
+        setConnectionIssue(null);
+      } else {
+        setTickPrice(null);
+        // Surface a friendly reason for the failure.
+        setConnectionIssue(
+          pData.error === "no price"
+            ? "لا يوجد سعر — تأكد أن الحساب الرئيسي (META_API_MASTER_LOGIN) منشور ومتصل في MetaApi."
+            : (pData.error || "فشل جلب السعر من السيرفر")
+        );
       }
       if (cData.ok) {
         setCandles(cData.candles);
+      } else {
+        setCandles([]);
       }
       if (mData.ok) {
         setMode(mData.mode);
       }
-    } catch {}
+    } catch (e: any) {
+      setConnectionIssue(`خطأ شبكة: ${e?.message || e}`);
+    }
   }, [botConfig.symbol, botConfig.timeframe]);
+
+  // Run a one-shot full diagnostic from /api/system/diagnose — tells the
+  // operator EXACTLY why prices / balance are missing.
+  const runDiagnostic = useCallback(async () => {
+    try {
+      const res = await fetch("/api/system/diagnose");
+      const data = await res.json();
+      if (data.mode === "SIMULATION") {
+        setMasterStatus({
+          checked: true,
+          found: false,
+          deployed: false,
+          connected: false,
+          message: "SIMULATION mode — لا يوجد توكن MetaApi.",
+        });
+        return;
+      }
+      const m = data.master;
+      if (!m) {
+        setMasterStatus({
+          checked: true,
+          found: false,
+          deployed: false,
+          connected: false,
+          message: "Master account info unavailable.",
+        });
+        return;
+      }
+      const found = !!m.foundInProvisioning;
+      const deployed = m.account?.state === "DEPLOYED";
+      const connected = m.account?.connectionStatus === "CONNECTED";
+      const parts: string[] = [];
+      if (!m.configuredLogin) parts.push("META_API_MASTER_LOGIN غير مُعرّف.");
+      else if (!found) parts.push(`الحساب الرئيسي ${m.configuredLogin} غير منشور في MetaApi.`);
+      else if (!deployed) parts.push(`الحساب الرئيسي ${m.configuredLogin} state=${m.account?.state} — يجب DEPLOY.`);
+      else if (!connected) parts.push(`الحساب الرئيسي ${m.configuredLogin} غير متصل (status=${m.account?.connectionStatus}).`);
+      else parts.push(`الحساب الرئيسي ${m.configuredLogin} متصل ✓`);
+      if (data.candleTest && !data.candleTest.ok) parts.push("جلب شموع XAUUSD فشل.");
+      if (data.priceTest && !data.priceTest.ok) parts.push("جلب سعر XAUUSD فشل.");
+      setMasterStatus({
+        checked: true,
+        found,
+        deployed,
+        connected,
+        message: parts.join(" "),
+      });
+    } catch (e: any) {
+      setMasterStatus({
+        checked: true,
+        found: false,
+        deployed: false,
+        connected: false,
+        message: `فشل التشخيص: ${e?.message || e}`,
+      });
+    }
+  }, []);
 
   // Initial load + intervals
   useEffect(() => {
     refreshStatus();
     refreshMarket();
+    runDiagnostic();
     const statusTimer = setInterval(refreshStatus, 2000);
     const marketTimer = setInterval(refreshMarket, 1000);
     return () => {
       clearInterval(statusTimer);
       clearInterval(marketTimer);
     };
-  }, [refreshStatus, refreshMarket]);
+  }, [refreshStatus, refreshMarket, runDiagnostic]);
 
   // Update config on server
   const updateConfig = async (patch: any) => {
@@ -276,6 +354,50 @@ export function DashboardScreen() {
           </Button>
         </div>
       </header>
+
+      {/* === Connection diagnostic banner === */}
+      {connectionIssue && (
+        <div className="mb-3 sm:mb-4 rounded-lg bg-red-500/10 border border-red-500/40 px-3 sm:px-4 py-2.5 sm:py-3 flex items-start gap-2">
+          <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0 text-red-400" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] sm:text-xs font-bold text-red-200 mb-0.5">
+              لا يوجد اتصال بأسعار السوق
+            </div>
+            <div className="text-[10px] sm:text-[11px] text-red-300/80 leading-relaxed">
+              {connectionIssue}
+            </div>
+            {masterStatus?.checked && (
+              <div className="text-[10px] sm:text-[11px] text-amber-200/80 mt-1 leading-relaxed">
+                <b>التشخيص:</b> {masterStatus.message}
+              </div>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={runDiagnostic}
+            className="border-red-500/40 text-red-200 hover:bg-red-500/20 h-7 px-2 text-[10px] shrink-0"
+          >
+            <RefreshCw className="w-3 h-3 ml-1" />
+            إعادة
+          </Button>
+        </div>
+      )}
+
+      {/* === Master-account status banner (when LIVE and not connected) === */}
+      {mode === "LIVE" && !connectionIssue && masterStatus?.checked && (!masterStatus.connected || !masterStatus.deployed) && (
+        <div className="mb-3 sm:mb-4 rounded-lg bg-amber-500/10 border border-amber-500/40 px-3 sm:px-4 py-2.5 sm:py-3 flex items-start gap-2">
+          <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0 text-amber-400" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] sm:text-xs font-bold text-amber-200 mb-0.5">
+              تحذير: الحساب الرئيسي غير متصل
+            </div>
+            <div className="text-[10px] sm:text-[11px] text-amber-300/80 leading-relaxed">
+              {masterStatus?.message || "الحساب الرئيسي غير منشور أو غير متصل في MetaApi — الأسعار لن تظهر."}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4">
         {/* === Left column: Bot config + controls === */}
