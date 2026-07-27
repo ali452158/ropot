@@ -1,13 +1,14 @@
 # ============================================================
 # ALFA Reports — docker-compose.yml (Hostinger VPS, no Traefik)
 # ============================================================
-# Two services:
-#   1. alfa       — Next.js web app on port 3000
-#   2. alfa-bot   — Telegram long-polling bot (sidecar)
+# Two services sharing ONE built image:
+#   1. alfa       — Next.js web app on port 3000 (default CMD)
+#   2. alfa-bot   — Telegram long-polling bot (overrides CMD)
 #
-# Both share the same Docker image (built once). The bot service
-# overrides the CMD to run the polling-bot.mjs script instead of the
-# Next.js server.
+# CRITICAL: The `image:` field on the first service names the built image
+# so the second service can REUSE it via `image:` + `build:` — without
+# this, Docker Compose builds TWO separate images (one per service),
+# doubling the build time and disk usage on the VPS.
 #
 # DNS section fixes MetaApi hostname resolution in some Docker setups.
 # ============================================================
@@ -17,6 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: alfa-reports:latest
     container_name: alfa-reports
     restart: unless-stopped
     ports:
@@ -45,9 +47,8 @@ services:
       start_period: 30s
 
   alfa-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # REUSE the image built by the `alfa` service — do NOT build again.
+    image: alfa-reports:latest
     container_name: alfa-bot
     restart: unless-stopped
     env_file:
