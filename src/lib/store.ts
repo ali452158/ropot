@@ -35,6 +35,18 @@ export type BotConfigState = {
   highFrequencyMode: boolean;
   botRunning: boolean;
   botStartedAt: string | null;
+  // === Trailing strategy fields ===
+  strategyType: "trailing" | "wick";
+  autoPairScan: boolean;
+  scanSymbols: string;
+  atrPeriod: number;
+  atrMultiplier: number;
+  emaFast: number;
+  emaSlow: number;
+  minAtrPrice: number;
+  breakevenAtr: number;
+  maxTradeMinutes: number;
+  lastScanWinner: string | null;
 };
 
 export type Trade = {
@@ -113,6 +125,18 @@ const defaultBotConfig: BotConfigState = {
   highFrequencyMode: false,
   botRunning: false,
   botStartedAt: null,
+  // === Trailing defaults (sensible for forex + gold on M1) ===
+  strategyType: "trailing",
+  autoPairScan: true,
+  scanSymbols: "XAUUSD,EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAGUSD",
+  atrPeriod: 14,
+  atrMultiplier: 1.5,
+  emaFast: 9,
+  emaSlow: 21,
+  minAtrPrice: 0.1,
+  breakevenAtr: 0.8,
+  maxTradeMinutes: 30,
+  lastScanWinner: null,
 };
 
 export const useAppStore = create<AppState>()(

@@ -84,6 +84,34 @@ model BotConfig {
   // Last M1 candle time the HF engine has already traded on (avoids duplicate
   // entries on the same candle). Stored as ISO string.
   lastHfCandleTime String?
+
+  // === Trailing Strategy fields (auto pair scan + auto entry + auto exit) ===
+  // strategyType: "wick" (legacy wick-rejection) | "trailing" (new ATR trailing).
+  strategyType    String   @default("trailing")
+  // autoPairScan: when true the bot scans a candidate symbol list each tick
+  // and picks the symbol with the strongest signal — the configured `symbol`
+  // becomes a fallback only.
+  autoPairScan    Boolean  @default(true)
+  // Comma-separated list of canonical symbols to scan when autoPairScan is on.
+  scanSymbols     String   @default("XAUUSD,EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAGUSD")
+  // ATR period (in candles) used for trailing distance and volatility filter.
+  atrPeriod       Int      @default(14)
+  // ATR multiplier for the trailing stop distance (higher = wider, safer).
+  atrMultiplier   Float    @default(1.5)
+  // EMA fast / slow periods for trend-direction detection.
+  emaFast         Int      @default(9)
+  emaSlow         Int      @default(21)
+  // Minimum ATR (in price units) below which we skip the symbol as "too quiet".
+  minAtrPrice     Float    @default(0.10)
+  // Breakeven trigger: once price moves this many ATRs in our favor, move SL
+  // to entry price (locks the trade from loss).
+  breakevenAtr    Float    @default(0.8)
+  // Hard stop: max minutes a trailing trade may stay open (safety net).
+  maxTradeMinutes Int      @default(30)
+  // Last symbol the trailing engine opened a trade on (used for display /
+  // debugging).
+  lastScanWinner  String?
+
   botRunning      Boolean  @default(false)
   botStartedAt    DateTime?
   createdAt       DateTime @default(now())

@@ -109,9 +109,21 @@ export function DashboardScreen() {
             data.highFrequencyMode !== botConfig.highFrequencyMode) {
           setBotConfig({ highFrequencyMode: data.highFrequencyMode });
         }
+        if (typeof data.strategyType === "string" &&
+            data.strategyType !== botConfig.strategyType) {
+          setBotConfig({ strategyType: data.strategyType as "trailing" | "wick" });
+        }
+        if (typeof data.autoPairScan === "boolean" &&
+            data.autoPairScan !== botConfig.autoPairScan) {
+          setBotConfig({ autoPairScan: data.autoPairScan });
+        }
+        if (typeof data.lastScanWinner === "string" &&
+            data.lastScanWinner !== botConfig.lastScanWinner) {
+          setBotConfig({ lastScanWinner: data.lastScanWinner });
+        }
       }
     } catch {}
-  }, [mt5.sessionId, botConfig.botRunning, botConfig.highFrequencyMode, setBotConfig]);
+  }, [mt5.sessionId, botConfig.botRunning, botConfig.highFrequencyMode, botConfig.strategyType, botConfig.autoPairScan, botConfig.lastScanWinner, setBotConfig]);
 
   // Refresh market price + candles
   const refreshMarket = useCallback(async () => {
@@ -425,6 +437,201 @@ export function DashboardScreen() {
                 />
               </div>
 
+              {/* === Trailing Strategy Configuration === */}
+              <div className="rounded-lg bg-gradient-to-br from-violet-500/5 to-cyan-500/5 border border-violet-500/25 p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-[11px] sm:text-xs text-violet-200 flex items-center gap-1">
+                    <CandlestickChart className="w-3.5 h-3.5 text-violet-300" />
+                    استراتيجية التريلينج (الذيول)
+                  </Label>
+                  <Select
+                    value={botConfig.strategyType || "trailing"}
+                    onValueChange={(v) =>
+                      updateConfig({ strategyType: v as "trailing" | "wick" })
+                    }
+                    disabled={botConfig.botRunning}
+                  >
+                    <SelectTrigger className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-8 w-28 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-black/90 border-violet-500/30">
+                      <SelectItem value="trailing" className="text-violet-100">
+                        Trailing
+                      </SelectItem>
+                      <SelectItem value="wick" className="text-violet-100">
+                        Wick (legacy)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {botConfig.strategyType === "trailing" && (
+                  <>
+                    {/* Auto pair scan toggle */}
+                    <div className="flex items-center justify-between py-1">
+                      <div className="min-w-0 mr-2">
+                        <Label className="text-[10px] text-violet-200/80 block">
+                          مسح تلقائي للأزواج
+                        </Label>
+                        <span className="text-[9px] text-violet-300/50 block leading-tight">
+                          يختار أقوى زوج تلقائياً
+                        </span>
+                      </div>
+                      <Switch
+                        checked={botConfig.autoPairScan}
+                        onCheckedChange={(v) => updateConfig({ autoPairScan: v })}
+                        disabled={botConfig.botRunning}
+                      />
+                    </div>
+
+                    {botConfig.autoPairScan && (
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          قائمة الأزواج للبحث
+                        </Label>
+                        <Input
+                          value={botConfig.scanSymbols}
+                          onChange={(e) =>
+                            updateConfig({ scanSymbols: e.target.value })
+                          }
+                          disabled={botConfig.botRunning}
+                          placeholder="XAUUSD,EURUSD,GBPUSD,..."
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                    )}
+
+                    {/* ATR / EMA params */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          ATR فترة
+                        </Label>
+                        <Input
+                          type="number"
+                          min={5}
+                          max={50}
+                          value={botConfig.atrPeriod}
+                          onChange={(e) =>
+                            updateConfig({
+                              atrPeriod: parseInt(e.target.value) || 14,
+                            })
+                          }
+                          disabled={botConfig.botRunning}
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          مضاعف ATR
+                        </Label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min={0.5}
+                          max={5}
+                          inputMode="decimal"
+                          value={botConfig.atrMultiplier}
+                          onChange={(e) =>
+                            updateConfig({
+                              atrMultiplier:
+                                parseFloat(e.target.value) || 1.5,
+                            })
+                          }
+                          disabled={botConfig.botRunning}
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          EMA سريع
+                        </Label>
+                        <Input
+                          type="number"
+                          min={3}
+                          max={50}
+                          value={botConfig.emaFast}
+                          onChange={(e) =>
+                            updateConfig({
+                              emaFast: parseInt(e.target.value) || 9,
+                            })
+                          }
+                          disabled={botConfig.botRunning}
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          EMA بطيء
+                        </Label>
+                        <Input
+                          type="number"
+                          min={10}
+                          max={200}
+                          value={botConfig.emaSlow}
+                          onChange={(e) =>
+                            updateConfig({
+                              emaSlow: parseInt(e.target.value) || 21,
+                            })
+                          }
+                          disabled={botConfig.botRunning}
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          Breakeven (ATR)
+                        </Label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min={0.1}
+                          max={5}
+                          inputMode="decimal"
+                          value={botConfig.breakevenAtr}
+                          onChange={(e) =>
+                            updateConfig({
+                              breakevenAtr:
+                                parseFloat(e.target.value) || 0.8,
+                            })
+                          }
+                          disabled={botConfig.botRunning}
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-violet-200/70 block">
+                          أقصى مدة (دقيقة)
+                        </Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={240}
+                          value={botConfig.maxTradeMinutes}
+                          onChange={(e) =>
+                            updateConfig({
+                              maxTradeMinutes:
+                                parseInt(e.target.value) || 30,
+                            })
+                          }
+                          disabled={botConfig.botRunning}
+                          className="bg-black/40 border-violet-500/30 text-violet-100 font-mono h-9 text-[11px]"
+                        />
+                      </div>
+                    </div>
+
+                    {botConfig.lastScanWinner && (
+                      <div className="text-[10px] text-violet-300/70 bg-violet-500/5 border border-violet-500/20 rounded-md px-2 py-1.5">
+                        آخر زوج تم اختياره:{" "}
+                        <b className="text-violet-100 font-mono">
+                          {botConfig.lastScanWinner}
+                        </b>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
               {/* Manual TP/SL */}
               {!botConfig.autoTpSl && (
                 <div className="grid grid-cols-2 gap-2">
@@ -658,7 +865,7 @@ export function DashboardScreen() {
 
       {/* Footer */}
       <footer className="mt-4 sm:mt-6 text-center text-[10px] sm:text-xs text-cyan-300/40 py-3 sm:py-4">
-        ALFA Reports — استراتيجية تسليم الأذيل · XAUUSD · M1 · TP 10 / SL 7
+        ALFA Reports · استراتيجية التريلينج التلقائية (ATR + EMA) · {botConfig.autoPairScan ? "مسح متعدد للأزواج" : `زوج واحد: ${botConfig.symbol}`} · {botConfig.timeframe}
       </footer>
     </div>
   );

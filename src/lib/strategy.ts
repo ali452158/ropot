@@ -419,3 +419,305 @@ export function pickNewClosedCandle(
   if (lastTradedTime && closed.time <= lastTradedTime) return null;
   return closed;
 }
+
+/* ===========================================================================
+ *  TRAILING STRATEGY ENGINE
+ * ===========================================================================
+ *
+ * Strategy summary (as requested by the operator):
+ *
+ *   "selects a pair → auto-enters → auto-exits on a trailing strategy"
+ *
+ * The trailing engine works as follows:
+ *
+ *   1. AUTO PAIR SELECTION (scan mode)
+ *      - For each candidate symbol (default list: XAUUSD, EURUSD, GBPUSD,
+ *        USDJPY, AUDUSD, USDCAD, XAGUSD), compute ATR + EMA-fast + EMA-slow
+ *        on the configured timeframe.
+ *      - Score each symbol by:
+ *          (a) ATR must be >= minAtrPrice (volatility filter — skip dead pairs).
+ *          (b) Spread must be <= maxSpreadPips (don't enter on wide spreads).
+ *          (c) |EMA-fast − EMA-slow| / ATR as the trend-strength score.
+ *      - Pick the symbol with the highest score that also has a clean trend
+ *        alignment (fast above slow → BUY candidate; fast below slow → SELL
+ *        candidate). If none qualifies, return HOLD for this tick.
+ *
+ *   2. AUTO ENTRY
+ *      - Direction = sign(EMA-fast − EMA-slow).
+ *      - Entry price = current ask (BUY) or bid (SELL).
+ *      - Initial stop loss = entry − atrMultiplier * ATR (BUY) or
+ *                            entry + atrMultiplier * ATR (SELL).
+ *      - No fixed TP — the engine uses a TRAILING stop instead.
+ *
+ *   3. AUTO EXIT (trailing)
+ *      - On every tick the engine recomputes a "trail price":
+ *          BUY : trail = currentBid − atrMultiplier * ATR
+ *          SELL: trail = currentAsk + atrMultiplier * ATR
+ *      - The SL is moved to `max(previousSL, trail)` for BUY
+ *        (or `min(previousSL, trail)` for SELL). SL only moves in the
+ *        favorable direction — it never moves backwards.
+ *      - BREAKEVEN: once price has moved >= breakevenAtr * ATR in our favor,
+ *        the SL is pushed to the entry price (locks the trade from loss).
+ *      - Hard time stop: if maxTradeMinutes is exceeded, close at market.
+ *
+ * Indicators used:
+ *   - ATR(14) — Average True Range for trailing distance + volatility filter.
+ *   - EMA(9)  — fast trend line.
+ *   - EMA(21) — slow trend line.
+ *
+ * Per-symbol pip values differ (XAUUSD pip = $0.10, EURUSD pip = $0.0001,
+ * USDJPY pip = $0.01, etc.) — the engine auto-detects the pip value by
+ * checking the digit count of the current price (5-digit → 0.0001, 3-digit
+ * → 0.01, 2-digit → 0.01 for gold/silver).
+ * =========================================================================*/
+
+export type TrailingConfig = {
+  atrPeriod: number;       // typical: 14
+  atrMultiplier: number;   // typical: 1.5
+  emaFast: number;         // typical: 9
+  emaSlow: number;         // typical: 21
+  minAtrPrice: number;     // skip symbols below this ATR (price units)
+  maxSpreadPips: number;   // skip symbols whose spread exceeds this (pips)
+  breakevenAtr: number;    // move SL to entry once this much in profit (ATRs)
+  maxTradeMinutes: number; // hard time stop
+  lotSize: number;
+};
+
+export type TrailingSignal = {
+  action: "BUY" | "SELL" | "HOLD";
+  reason: string;
+  symbol: string;
+  entryPrice: number | null;
+  stopLoss: number | null;
+  atr: number | null;
+  emaFast: number | null;
+  emaSlow: number | null;
+  score: number;
+};
+
+/** Compute Average True Range (ATR) over the last N candles. */
+export function computeATR(candles: Candle[], period: number): number | null {
+  if (candles.length < period + 1) return null;
+  // True Range = max(high-low, |high-prevClose|, |low-prevClose|)
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const prev = candles[i - 1];
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prev.close),
+      Math.abs(c.low - prev.close)
+    );
+    trs.push(tr);
+  }
+  // Simple moving average of the last `period` TRs (good enough for trailing).
+  const slice = trs.slice(-period);
+  if (slice.length === 0) return null;
+  return slice.reduce((a, b) => a + b, 0) / slice.length;
+}
+
+/** Compute Exponential Moving Average over the close prices. */
+export function computeEMA(values: number[], period: number): number | null {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  // Seed with SMA of the first `period` values.
+  let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+/**
+ * Auto-detect the pip value for a symbol based on its current price.
+ *
+ * Conventions:
+ *   - Gold (XAUUSD ~ 2000-3000, 2 decimal places) → pip = 0.1
+ *   - Silver (XAGUSD ~ 20-50) → pip = 0.01
+ *   - JPY pairs (~ 100-200) → pip = 0.01
+ *   - 5-digit forex (EURUSD, GBPUSD, etc.) → pip = 0.0001
+ *   - 4-digit forex (~ 0.5-2.0) → pip = 0.0001
+ *
+ * To distinguish gold (>=100, pip=0.1) from JPY pairs (>=100, pip=0.01),
+ * we use a simple heuristic: prices >= 1000 are gold (or index), prices
+ * in [100, 1000) are typically JPY pairs.
+ */
+export function detectPipValue(price: number): number {
+  if (price <= 0) return 0.0001;
+  // Gold (XAUUSD ~ 1000-5000) → pip = 0.1
+  if (price >= 1000) return 0.1;
+  // JPY pairs (~ 100-200) and Silver (XAGUSD ~ 20-50) → pip = 0.01
+  if (price >= 10) return 0.01;
+  // 5-digit forex (~ 0.5-2.0) → pip = 0.0001
+  if (price >= 1) return 0.0001;
+  // Very small prices (crypto, etc.) → 0.0001
+  return 0.0001;
+}
+
+/** Evaluate one symbol's trailing entry signal. */
+export function evaluateTrailingEntry(
+  symbol: string,
+  candles: Candle[],
+  currentBid: number,
+  currentAsk: number,
+  cfg: TrailingConfig
+): TrailingSignal {
+  const empty: TrailingSignal = {
+    action: "HOLD",
+    reason: "",
+    symbol,
+    entryPrice: null,
+    stopLoss: null,
+    atr: null,
+    emaFast: null,
+    emaSlow: null,
+    score: 0,
+  };
+  if (candles.length < Math.max(cfg.atrPeriod + 1, cfg.emaSlow + 1)) {
+    return { ...empty, reason: `Not enough candles (${candles.length})` };
+  }
+  const atr = computeATR(candles, cfg.atrPeriod);
+  if (atr == null || atr <= 0) {
+    return { ...empty, reason: "ATR computation failed" };
+  }
+  // Volatility filter — skip "dead" pairs.
+  if (atr < cfg.minAtrPrice) {
+    return {
+      ...empty,
+      atr,
+      reason: `ATR ${atr.toFixed(4)} < min ${cfg.minAtrPrice} (too quiet)`,
+    };
+  }
+  // Spread filter — never enter on a wide spread.
+  const pipValue = detectPipValue(currentAsk);
+  const spreadPips = (currentAsk - currentBid) / pipValue;
+  if (spreadPips > cfg.maxSpreadPips) {
+    return {
+      ...empty,
+      atr,
+      reason: `Spread ${spreadPips.toFixed(2)}p > max ${cfg.maxSpreadPips}p`,
+    };
+  }
+  // Trend detection.
+  const closes = candles.map((c) => c.close);
+  const emaFast = computeEMA(closes, cfg.emaFast);
+  const emaSlow = computeEMA(closes, cfg.emaSlow);
+  if (emaFast == null || emaSlow == null) {
+    return { ...empty, atr, reason: "EMA computation failed" };
+  }
+  // Trend strength score = |fast-slow| / ATR. Higher = stronger trend.
+  const diff = emaFast - emaSlow;
+  const score = Math.abs(diff) / atr;
+  // Require minimum score so we only enter on a real trend, not a flat line.
+  if (score < 0.15) {
+    return {
+      ...empty,
+      atr,
+      emaFast,
+      emaSlow,
+      score,
+      reason: `Trend too weak (score ${score.toFixed(2)} < 0.15)`,
+    };
+  }
+  // Direction from EMA alignment.
+  const direction: "BUY" | "SELL" = diff > 0 ? "BUY" : "SELL";
+  const entry = direction === "BUY" ? currentAsk : currentBid;
+  const stopDistance = cfg.atrMultiplier * atr;
+  const stopLoss =
+    direction === "BUY" ? entry - stopDistance : entry + stopDistance;
+  return {
+    action: direction,
+    reason: `Trailing ${direction} — EMA-fast ${emaFast.toFixed(4)} ${
+      direction === "BUY" ? ">" : "<"
+    } EMA-slow ${emaSlow.toFixed(4)}, ATR=${atr.toFixed(4)}, score=${score.toFixed(2)}`,
+    symbol,
+    entryPrice: entry,
+    stopLoss,
+    atr,
+    emaFast,
+    emaSlow,
+    score,
+  };
+}
+
+/**
+ * Trailing-stop exit evaluator.
+ *
+ * On every tick the bot calls this with the current state (entry, SL, atr,
+ * openedAt) and the current bid/ask. Returns:
+ *   - { exit: true, reason, exitPrice } if the position should be closed now.
+ *   - { exit: false, newStopLoss } if the SL should be moved (trail / BE).
+ *        `newStopLoss` is null when no update is needed.
+ */
+export function evaluateTrailingExit(
+  position: {
+    direction: "BUY" | "SELL";
+    openPrice: number;
+    currentStopLoss: number;
+    atr: number;
+    openedAt: string;
+  },
+  currentBid: number,
+  currentAsk: number,
+  cfg: TrailingConfig
+): {
+  exit: boolean;
+  reason: "SL_HIT" | "TIME" | null;
+  exitPrice?: number;
+  newStopLoss?: number | null;
+} {
+  const now = Date.now();
+  const elapsedSec = (now - new Date(position.openedAt).getTime()) / 1000;
+
+  // 1) Hard time stop — never let a trailing trade hang forever.
+  if (elapsedSec >= cfg.maxTradeMinutes * 60) {
+    return {
+      exit: true,
+      reason: "TIME",
+      exitPrice: position.direction === "BUY" ? currentBid : currentAsk,
+    };
+  }
+
+  const { direction, openPrice, currentStopLoss, atr } = position;
+  const stopDistance = cfg.atrMultiplier * atr;
+
+  // 2) Trailing stop — compute the new candidate SL.
+  let candidateSl: number;
+  if (direction === "BUY") {
+    candidateSl = currentBid - stopDistance;
+    // Breakeven: if price has moved >= breakevenAtr * ATR in our favor,
+    // push the SL to entry (or higher if the trailing SL is already higher).
+    const favorableMove = currentBid - openPrice;
+    if (favorableMove >= cfg.breakevenAtr * atr) {
+      candidateSl = Math.max(candidateSl, openPrice);
+    }
+    // SL only moves UP for BUY (never backwards).
+    const newSl = Math.max(currentStopLoss, candidateSl);
+    // 3) Stop-loss hit?
+    if (currentBid <= newSl) {
+      return { exit: true, reason: "SL_HIT", exitPrice: newSl };
+    }
+    return {
+      exit: false,
+      reason: null,
+      newStopLoss: newSl > currentStopLoss ? newSl : null,
+    };
+  } else {
+    // SELL
+    candidateSl = currentAsk + stopDistance;
+    const favorableMove = openPrice - currentAsk;
+    if (favorableMove >= cfg.breakevenAtr * atr) {
+      candidateSl = Math.min(candidateSl, openPrice);
+    }
+    // SL only moves DOWN for SELL (never backwards).
+    const newSl = Math.min(currentStopLoss, candidateSl);
+    if (currentAsk >= newSl) {
+      return { exit: true, reason: "SL_HIT", exitPrice: newSl };
+    }
+    return {
+      exit: false,
+      reason: null,
+      newStopLoss: newSl < currentStopLoss ? newSl : null,
+    };
+  }
+}

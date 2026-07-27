@@ -45,6 +45,9 @@ export async function POST(req: NextRequest) {
       botRunning: cfg?.botRunning || false,
       botStartedAt: cfg?.botStartedAt?.toISOString() || null,
       highFrequencyMode: cfg?.highFrequencyMode || false,
+      strategyType: cfg?.strategyType || "trailing",
+      autoPairScan: cfg?.autoPairScan ?? true,
+      lastScanWinner: cfg?.lastScanWinner || null,
       trades,
       stats: {
         total: trades.length,
