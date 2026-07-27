@@ -28,6 +28,7 @@ import {
   PIP_VALUE_XAUUSD,
   type Candle,
 } from "./strategy";
+import { sendMessage } from "./telegram";
 
 type ActiveSession = {
   sessionToken: string;       // public token (used by API)
@@ -50,6 +51,75 @@ type ActiveSession = {
 };
 
 const activeSessions = new Map<string, ActiveSession>();
+
+/**
+ * Send a Telegram notification to the admin chat about a trade event
+ * (OPEN / CLOSED_TP / CLOSED_SL / CLOSED_TIME / ERROR).
+ *
+ * Best-effort: failures are logged but never throw — we never want a
+ * Telegram hiccup to break the trading loop.
+ */
+async function notifyTrade(
+  event: "OPEN" | "CLOSE" | "ERROR",
+  ctx: ActiveSession,
+  details: {
+    direction?: "BUY" | "SELL";
+    symbol?: string;
+    openPrice?: number | null;
+    exitPrice?: number | null;
+    profitPips?: number | null;
+    profitUsd?: number | null;
+    reason?: string;
+    errorMessage?: string;
+    lotSize?: number;
+  }
+): Promise<void> {
+  try {
+    const adminIds = (process.env.TELEGRAM_ADMIN_IDS || "")
+      .split(/[,\s]+/)
+      .filter(Boolean);
+    if (adminIds.length === 0) return; // no admins configured — skip silently
+
+    const emoji =
+      event === "OPEN" ? "🟢" :
+      event === "CLOSE" ? (details.profitPips != null && details.profitPips >= 0 ? "✅" : "🔴") :
+      "⚠️";
+
+    const lines: string[] = [];
+    lines.push(`${emoji} <b>${event === "OPEN" ? "صفقة جديدة" : event === "CLOSE" ? "إغلاق صفقة" : "خطأ في صفقة"}</b>`);
+    lines.push("");
+    if (details.direction) lines.push(`النوع: <b>${details.direction === "BUY" ? "شراء BUY" : "بيع SELL"}</b>`);
+    if (details.symbol) lines.push(`الزوج: <code>${details.symbol}</code>`);
+    if (details.lotSize) lines.push(`حجم اللوت: <code>${details.lotSize}</code>`);
+    if (details.openPrice != null) lines.push(`سعر الدخول: <code>${details.openPrice.toFixed(2)}</code>`);
+    if (details.exitPrice != null) lines.push(`سعر الخروج: <code>${details.exitPrice.toFixed(2)}</code>`);
+    if (details.profitPips != null) {
+      const sign = details.profitPips >= 0 ? "+" : "";
+      lines.push(`النقاط: <b>${sign}${details.profitPips.toFixed(1)} pip</b>`);
+    }
+    if (details.profitUsd != null) {
+      const sign = details.profitUsd >= 0 ? "+" : "";
+      lines.push(`الربح: <b>${sign}$${details.profitUsd.toFixed(2)}</b>`);
+    }
+    if (details.reason) lines.push(`السبب: ${details.reason}`);
+    if (details.errorMessage) lines.push(`الخطأ: <code>${details.errorMessage.slice(0, 120)}</code>`);
+    lines.push("");
+    lines.push(`حساب MT5: <code>${ctx.mt5Login}</code>`);
+
+    const text = lines.join("\n");
+
+    for (const id of adminIds) {
+      await sendMessage({
+        chat_id: id,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+    }
+  } catch (e: any) {
+    console.warn(`[notifyTrade] failed:`, e?.message || e);
+  }
+}
 
 export function isBotRunning(sessionToken: string): boolean {
   return activeSessions.has(sessionToken);
@@ -175,6 +245,17 @@ export async function stopBot(sessionToken: string): Promise<{ ok: boolean; erro
           ),
         },
       });
+      // Notify admin: the bot was stopped manually, so the open position was closed.
+      await notifyTrade("CLOSE", ctx, {
+        direction: cp.direction,
+        symbol: ctx.symbol,
+        lotSize: 0.01,
+        openPrice: cp.openPrice,
+        exitPrice,
+        profitPips,
+        profitUsd: profitPips * 1.0,
+        reason: "MANUAL_STOP",
+      });
     }
     ctx.currentPosition = null;
   }
@@ -249,6 +330,18 @@ async function tickOnce(ctx: ActiveSession) {
         },
       });
       ctx.currentPosition = null;
+
+      // Notify the admin via Telegram about the closed trade (best-effort).
+      await notifyTrade("CLOSE", ctx, {
+        direction: cp.direction,
+        symbol: cfg.symbol,
+        lotSize: cfg.lotSize,
+        openPrice: cp.openPrice,
+        exitPrice,
+        profitPips,
+        profitUsd: profitPips * (cfg.lotSize * 100),
+        reason: exit.reason,
+      });
     }
     return;
   }
@@ -359,6 +452,14 @@ async function executeEntry(
         errorMessage: order.error || "order failed",
       },
     });
+    // Notify admin about the failed order (best-effort).
+    await notifyTrade("ERROR", ctx, {
+      direction: signal.action,
+      symbol: cfg.symbol,
+      lotSize: cfg.lotSize,
+      openPrice: signal.entryPrice,
+      errorMessage: order.error || "order failed",
+    });
     return;
   }
 
@@ -393,6 +494,15 @@ async function executeEntry(
     `[bot:${ctx.sessionToken}] OPEN ${signal.action} ${cfg.symbol} @ ${signal.entryPrice} ` +
     `TP=${signal.tpPrice} SL=${signal.slPrice} reason="${signal.reason}"`
   );
+
+  // Notify the admin via Telegram about the new trade (best-effort).
+  await notifyTrade("OPEN", ctx, {
+    direction: signal.action,
+    symbol: cfg.symbol,
+    lotSize: cfg.lotSize,
+    openPrice: signal.entryPrice,
+    reason: signal.reason,
+  });
 }
 
 /** Periodically sync open positions from the broker (catch-up safety net). */
