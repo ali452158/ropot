@@ -447,56 +447,22 @@ export async function provisionMetaApiAccount(
   //   (b) Account was provisioned in a previous run / from the dashboard.
   //   (c) Free-tier MetaApi plan that has hit its account quota.
   //
-  // CRITICAL: We also check that the existing account has the SUBSCRIBER role.
-  // CopyFactory's PUT /users/current/configuration/subscribers/{id} endpoint
-  // refuses to create a subscriber if the underlying MetaApi account is not
-  // marked with copyFactoryRoles: ["SUBSCRIBER"]. This role can ONLY be set
-  // at account creation time — the PUT /users/current/accounts/{id} endpoint
-  // rejects `copyFactoryRoles` as "Unexpected value" on this server version.
-  //
-  // Migration strategy: if an existing account is missing the SUBSCRIBER role,
-  // we undeploy + delete it and create a fresh one with the role. The user's
-  // MT5 password (re-entered at login) is used to re-create the account.
+  // CRITICAL: We reuse the existing account REGARDLESS of its copyFactoryRoles.
+  // Older deployments created accounts with role PROVIDER (or none), and the
+  // current JWT token may lack `mt-server:*:<broker>` resource access, which
+  // means we cannot delete-and-recreate the account. Reusing as-is keeps the
+  // bot working for direct trading. CopyFactory subscriber functionality is
+  // only needed if the bot uses CopyFactory — which it currently does NOT
+  // (the trailing strategy trades directly via createMarketOrder).
   const existing = await findExistingMetaApiAccount(mt5Login);
   if (existing) {
-    if (existing.copyFactoryRoles?.includes("SUBSCRIBER")) {
-      accountCache.set(mt5Login, existing.id);
-      return { metaApiAccountId: existing.id };
-    }
-
-    // Existing account is missing SUBSCRIBER role — migrate it.
     console.log(
-      `[metaapi] Existing account ${existing.id} for login=${mt5Login} is missing SUBSCRIBER role (roles=${JSON.stringify(
-        existing.copyFactoryRoles
-      )}). Migrating: undeploy → delete → re-create with role.`
+      `[metaapi] Reusing existing account ${existing.id} for login=${mt5Login} ` +
+      `(roles=${JSON.stringify(existing.copyFactoryRoles)}). No migration attempted — ` +
+      `direct trading works with any role.`
     );
-
-    // Undeploy first (DELETE refuses DEPLOYED accounts).
-    const undeploy = await undeployMetaApiAccount(existing.id);
-    if (!undeploy.ok) {
-      console.warn(
-        `[metaapi] Undeploy failed for ${existing.id}: ${undeploy.error}. ` +
-          `Attempting delete anyway.`
-      );
-    }
-    // Wait briefly for state transition (best-effort, ~10s).
-    await waitForAccountState(existing.id, "UNDEPLOYED", 5);
-
-    // Delete the old account.
-    const del = await deleteMetaApiAccount(existing.id);
-    if (!del.ok) {
-      console.warn(
-        `[metaapi] Delete failed for ${existing.id}: ${del.error}. ` +
-          `Will attempt to create a new account anyway (may fail if quota is full).`
-      );
-    } else {
-      console.log(
-        `[metaapi] Deleted old account ${existing.id}. Waiting 3s before re-create...`
-      );
-      // Brief pause to let the deletion propagate on the server side.
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-    // Fall through to create a fresh account with the SUBSCRIBER role.
+    accountCache.set(mt5Login, existing.id);
+    return { metaApiAccountId: existing.id };
   }
 
   // STEP 2: Try to create a new account WITH copyFactoryRoles: ["SUBSCRIBER"].
