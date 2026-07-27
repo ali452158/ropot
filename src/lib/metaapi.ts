@@ -881,6 +881,33 @@ export async function getCurrentPrice(
 }
 
 /**
+ * Ensure the in-process accountCache has an entry for the given MT5 login.
+ *
+ * CRITICAL: After a container restart, accountCache is wiped (it's an in-memory
+ * Map). The instrumentation hook resumes bot sessions by calling startBot(),
+ * which reads the metaApiAccountId from the DB — but without this helper, the
+ * cache would stay empty and EVERY subsequent createMarketOrder / closePosition
+ * / getOpenPositions call would fail with "Account not provisioned".
+ *
+ * This function is idempotent — calling it with the same (login, id) is a
+ * no-op after the first call. It also does NOT make any network calls.
+ *
+ * Safe to call in SIMULATION mode (no-op).
+ */
+export function ensureAccountCached(
+  mt5Login: string,
+  metaApiAccountId: string | null | undefined
+): void {
+  if (!mt5Login || !metaApiAccountId) return;
+  if (SIMULATION) return;
+  if (accountCache.get(mt5Login) === metaApiAccountId) return;
+  accountCache.set(mt5Login, metaApiAccountId);
+  console.log(
+    `[metaapi] accountCache populated for login=${mt5Login} → ${metaApiAccountId}`
+  );
+}
+
+/**
  * Returns the MetaAPI account ID currently associated with an MT5 login
  * (or null if that login has never been provisioned in this process).
  * Used by the admin/sessions endpoint to report which subscribers are bound.
@@ -914,13 +941,15 @@ const symbolResolveCache = new Map<string, string>(); // key: `${mt5Login}:${bas
 
 async function resolveBrokerSymbol(
   mt5Login: string,
-  requestedSymbol: string
+  requestedSymbol: string,
+  metaApiAccountIdOverride?: string
 ): Promise<string> {
   const cacheKey = `${mt5Login}:${requestedSymbol}`;
   const cached = symbolResolveCache.get(cacheKey);
   if (cached) return cached;
 
-  const id = accountCache.get(mt5Login);
+  const id =
+    metaApiAccountIdOverride || accountCache.get(mt5Login);
   if (!id) return requestedSymbol; // can't resolve without account id
 
   // NOTE: On cloud-g2 accounts, the per-symbol endpoint
@@ -1008,7 +1037,8 @@ export async function createMarketOrder(
   direction: "BUY" | "SELL",
   volume: number,
   stopLoss?: number,
-  takeProfit?: number
+  takeProfit?: number,
+  metaApiAccountIdOverride?: string
 ): Promise<TradeResult> {
   if (SIMULATION) {
     return {
@@ -1016,11 +1046,11 @@ export async function createMarketOrder(
       orderId: `sim-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
     };
   }
-  const id = accountCache.get(mt5Login);
+  const id = metaApiAccountIdOverride || accountCache.get(mt5Login);
   if (!id) return { ok: false, error: "Account not provisioned" };
 
   // Resolve the broker-specific symbol name (XAUUSD → XAUUSDm on Exness, etc.)
-  const brokerSymbol = await resolveBrokerSymbol(mt5Login, symbol);
+  const brokerSymbol = await resolveBrokerSymbol(mt5Login, symbol, metaApiAccountIdOverride);
 
   try {
     const res = await metaApiFetch("client", `/users/current/accounts/${id}/trade`, {
@@ -1052,10 +1082,11 @@ export async function createMarketOrder(
 
 export async function closePosition(
   mt5Login: string,
-  positionId: string
+  positionId: string,
+  metaApiAccountIdOverride?: string
 ): Promise<TradeResult> {
   if (SIMULATION) return { ok: true, orderId: positionId };
-  const id = accountCache.get(mt5Login);
+  const id = metaApiAccountIdOverride || accountCache.get(mt5Login);
   if (!id) return { ok: false, error: "Account not provisioned" };
   try {
     const res = await metaApiFetch("client", `/users/current/accounts/${id}/trade`, {
@@ -1072,9 +1103,12 @@ export async function closePosition(
   }
 }
 
-export async function getOpenPositions(mt5Login: string): Promise<Position[]> {
+export async function getOpenPositions(
+  mt5Login: string,
+  metaApiAccountIdOverride?: string
+): Promise<Position[]> {
   if (SIMULATION) return [];
-  const id = accountCache.get(mt5Login);
+  const id = metaApiAccountIdOverride || accountCache.get(mt5Login);
   if (!id) return [];
   try {
     const res = await metaApiFetch("client", `/users/current/accounts/${id}/positions`);

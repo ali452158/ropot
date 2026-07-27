@@ -226,18 +226,49 @@ export function DashboardScreen() {
     }
   }, []);
 
+  // Refresh account info (balance / equity / connected) — runs on mount
+  // and every 5 seconds. Without this, the dashboard would only show the
+  // balance captured at login time (which goes stale after a restart or
+  // when the broker balance changes).
+  const refreshAccount = useCallback(async () => {
+    if (!mt5.sessionId) return;
+    try {
+      const res = await fetch("/api/mt5/account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: mt5.sessionId }),
+      });
+      const data = await res.json();
+      if (data.ok && data.account) {
+        setMT5({
+          balance: data.account.balance,
+          equity: data.account.equity,
+          connected: data.account.connected,
+          currency: data.account.currency,
+          mt5Login: data.account.login,
+          mt5Server: data.account.server,
+        });
+      }
+    } catch {
+      /* silent — best-effort refresh */
+    }
+  }, [mt5.sessionId, setMT5]);
+
   // Initial load + intervals
   useEffect(() => {
     refreshStatus();
     refreshMarket();
+    refreshAccount();
     runDiagnostic();
     const statusTimer = setInterval(refreshStatus, 2000);
     const marketTimer = setInterval(refreshMarket, 1000);
+    const accountTimer = setInterval(refreshAccount, 5000);
     return () => {
       clearInterval(statusTimer);
       clearInterval(marketTimer);
+      clearInterval(accountTimer);
     };
-  }, [refreshStatus, refreshMarket, runDiagnostic]);
+  }, [refreshStatus, refreshMarket, refreshAccount, runDiagnostic]);
 
   // Update config on server
   const updateConfig = async (patch: any) => {
