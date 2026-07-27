@@ -90,6 +90,13 @@ const activeSessions = new Map<string, ActiveSession>();
  * Send a Telegram notification to the admin chat about a trade event.
  * Best-effort: failures are logged but never throw.
  */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 async function notifyTrade(
   event: "OPEN" | "CLOSE" | "TRAIL" | "ERROR" | "SCAN",
   ctx: ActiveSession,
@@ -146,8 +153,8 @@ async function notifyTrade(
       const sign = details.profitUsd >= 0 ? "+" : "";
       lines.push(`الربح: <b>${sign}$${details.profitUsd.toFixed(2)}</b>`);
     }
-    if (details.reason) lines.push(`السبب: ${details.reason}`);
-    if (details.errorMessage) lines.push(`الخطأ: <code>${details.errorMessage.slice(0, 120)}</code>`);
+    if (details.reason) lines.push(`السبب: ${escapeHtml(details.reason)}`);
+    if (details.errorMessage) lines.push(`الخطأ: <code>${escapeHtml(details.errorMessage.slice(0, 120))}</code>`);
     lines.push("");
     lines.push(`حساب MT5: <code>${ctx.mt5Login}</code>`);
 
