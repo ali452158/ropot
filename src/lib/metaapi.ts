@@ -790,6 +790,21 @@ function normalizeTimeframe(tf: string): string {
   return t;
 }
 
+// ---- Price cache + rate-limit handling ----
+// MetaApi rate-limits per-account current-price requests. The bot ticks every
+// 500ms-1000ms and would otherwise hit the limit in ~30s. We:
+//   1. Cache each symbol's last known price for `PRICE_CACHE_TTL_MS` (default 3s)
+//      — multiple ticks within that window reuse the same value.
+//   2. Dedup concurrent fetches for the SAME symbol (in-flight promise sharing).
+//   3. On 429 / rate-limit, enter a global cool-down (`PRICE_RATE_LIMITED_UNTIL`)
+//      for `PRICE_RATE_LIMIT_COOLDOWN_MS` (default 10s). During cool-down all
+//      getCurrentPrice() calls return the last cached value (or null if none).
+const PRICE_CACHE_TTL_MS = 3_000;          // serve cached price up to 3s old
+const PRICE_RATE_LIMIT_COOLDOWN_MS = 10_000; // back off 10s after a 429
+const priceCache = new Map<string, { tick: Tick; ts: number }>();
+const priceInFlight = new Map<string, Promise<Tick | null>>();
+let priceRateLimitedUntil = 0;
+
 export async function getCurrentPrice(
   symbol: string,
   _mt5Login?: string // deprecated — kept for back-compat, ignored
@@ -803,46 +818,101 @@ export async function getCurrentPrice(
       time: new Date().toISOString(),
     };
   }
-  // ALWAYS use the master account for market data.
-  const id = (await getMasterMetaApiAccountId()) || accountCache.values().next().value;
-  if (!id) return null;
 
-  // ---- Cloud-g2 path ----
-  // The current-price endpoint on cloud-g2 accounts uses:
-  //   /users/current/accounts/{id}/symbols/{symbol}/current-price
-  // The old path /current-prices/{symbol} returns 404 on cloud-g2.
-  //
-  // The symbol must be the BROKER-SPECIFIC name (XAUUSDm, not XAUUSD) —
-  // we resolve it through the master account.
-  const masterLogin = getMasterLogin();
-  const brokerSymbol = masterLogin
-    ? await resolveBrokerSymbol(masterLogin, symbol)
-    : symbol;
+  // During rate-limit cool-down, return cached price if available.
+  const now = Date.now();
+  if (now < priceRateLimitedUntil) {
+    const cached = priceCache.get(symbol);
+    return cached ? cached.tick : null;
+  }
+
+  // Cache hit?
+  const cached = priceCache.get(symbol);
+  if (cached && now - cached.ts < PRICE_CACHE_TTL_MS) {
+    return cached.tick;
+  }
+
+  // Dedup: if the same symbol is already in flight, piggyback on it.
+  const inflight = priceInFlight.get(symbol);
+  if (inflight) return inflight;
+
+  const p = (async (): Promise<Tick | null> => {
+    // ALWAYS use the master account for market data.
+    const id = (await getMasterMetaApiAccountId()) || accountCache.values().next().value;
+    if (!id) return null;
+
+    // ---- Cloud-g2 path ----
+    // The current-price endpoint on cloud-g2 accounts uses:
+    //   /users/current/accounts/{id}/symbols/{symbol}/current-price
+    // The old path /current-prices/{symbol} returns 404 on cloud-g2.
+    //
+    // The symbol must be the BROKER-SPECIFIC name (XAUUSDm, not XAUUSD) —
+    // we resolve it through the master account.
+    const masterLogin = getMasterLogin();
+    const brokerSymbol = masterLogin
+      ? await resolveBrokerSymbol(masterLogin, symbol)
+      : symbol;
+    try {
+      const res = await metaApiFetch(
+        "client",
+        `/users/current/accounts/${id}/symbols/${encodeURIComponent(brokerSymbol)}/current-price`
+      );
+      if (res.ok) {
+        const d = await res.json();
+        const tick: Tick = { symbol: brokerSymbol, bid: d.bid, ask: d.ask, time: d.time };
+        priceCache.set(symbol, { tick, ts: Date.now() });
+        return tick;
+      }
+      // 429 = rate limited. Enter cool-down. Return cached price (if any).
+      if (res.status === 429) {
+        priceRateLimitedUntil = Date.now() + PRICE_RATE_LIMIT_COOLDOWN_MS;
+        console.warn(
+          `[metaapi] getCurrentPrice rate-limited (429). Cooling down for ${PRICE_RATE_LIMIT_COOLDOWN_MS}ms. ` +
+          `Returning cached price for ${symbol}.`
+        );
+        const c = priceCache.get(symbol);
+        return c ? c.tick : null;
+      }
+      // Fall back to legacy path for older cloud (non-g2) accounts.
+      const legacyRes = await metaApiFetch(
+        "client",
+        `/users/current/accounts/${id}/current-prices/${encodeURIComponent(brokerSymbol)}`
+      );
+      if (legacyRes.ok) {
+        const d = await legacyRes.json();
+        const tick: Tick = { symbol: brokerSymbol, bid: d.bid, ask: d.ask, time: d.time };
+        priceCache.set(symbol, { tick, ts: Date.now() });
+        return tick;
+      }
+      if (legacyRes.status === 429) {
+        priceRateLimitedUntil = Date.now() + PRICE_RATE_LIMIT_COOLDOWN_MS;
+        console.warn(
+          `[metaapi] getCurrentPrice(legacy) rate-limited (429). Cooling down.`
+        );
+        const c = priceCache.get(symbol);
+        return c ? c.tick : null;
+      }
+      // Suppress the noisy log if we have a cached value to fall back to —
+      // avoids filling the logs when MetaApi has a transient 404/5xx hiccup.
+      if (!cached) {
+        console.warn(
+          `[metaapi] getCurrentPrice(${symbol}→${brokerSymbol}) failed: ${res.status} / ${legacyRes.status}`
+        );
+      }
+      return cached ? cached.tick : null;
+    } catch (e: any) {
+      if (!cached) {
+        console.warn(`[metaapi] getCurrentPrice error:`, e?.message);
+      }
+      return cached ? cached.tick : null;
+    }
+  })();
+
+  priceInFlight.set(symbol, p);
   try {
-    const res = await metaApiFetch(
-      "client",
-      `/users/current/accounts/${id}/symbols/${encodeURIComponent(brokerSymbol)}/current-price`
-    );
-    if (res.ok) {
-      const d = await res.json();
-      return { symbol: brokerSymbol, bid: d.bid, ask: d.ask, time: d.time };
-    }
-    // Fall back to legacy path for older cloud (non-g2) accounts.
-    const legacyRes = await metaApiFetch(
-      "client",
-      `/users/current/accounts/${id}/current-prices/${encodeURIComponent(brokerSymbol)}`
-    );
-    if (legacyRes.ok) {
-      const d = await legacyRes.json();
-      return { symbol: brokerSymbol, bid: d.bid, ask: d.ask, time: d.time };
-    }
-    console.warn(
-      `[metaapi] getCurrentPrice(${symbol}→${brokerSymbol}) failed: ${res.status} / ${legacyRes.status}`
-    );
-    return null;
-  } catch (e: any) {
-    console.warn(`[metaapi] getCurrentPrice error:`, e?.message);
-    return null;
+    return await p;
+  } finally {
+    priceInFlight.delete(symbol);
   }
 }
 
