@@ -31,11 +31,22 @@ export type BotConfigState = {
   timeExitMinutes: number;
   minWickRatio: number;
   maxSpreadPips: number;
-  /** High-frequency mode: trade on every closed M1 candle (no waiting for wick revisit). */
+  /** High-frequency mode: trade on every closed M1 candle after wick touch. */
   highFrequencyMode: boolean;
   botRunning: boolean;
   botStartedAt: string | null;
-  // === Trailing strategy fields ===
+  // === Simplified UI fields ===
+  /** User-selected trade direction: BUY, SELL, or AUTO (trend-following). */
+  tradeDirection: "BUY" | "SELL" | "AUTO";
+  /** Max concurrent open positions in HF mode. */
+  maxOpenPositions: number;
+  /** Consecutive losses that triggers auto-stop ("market unstable"). */
+  maxLossStreak: number;
+  /** Current consecutive-loss counter (reset on any win). */
+  lastLossStreak: number;
+  /** True when the bot auto-stopped itself due to instability. */
+  instabilityStop: boolean;
+  // === Trailing strategy fields (server-side only; UI doesn't expose these) ===
   strategyType: "trailing" | "wick";
   autoPairScan: boolean;
   scanSymbols: string;
@@ -119,23 +130,29 @@ const defaultBotConfig: BotConfigState = {
   tpPips: 10,
   slPips: 7,
   autoTpSl: true,
-  timeExitMinutes: 2,
+  timeExitMinutes: 1,
   minWickRatio: 0.5,
   maxSpreadPips: 3.0,
-  highFrequencyMode: false,
+  highFrequencyMode: true,
   botRunning: false,
   botStartedAt: null,
-  // === Trailing defaults (sensible for forex + gold on M1) ===
+  // === Simplified UI defaults ===
+  tradeDirection: "AUTO",
+  maxOpenPositions: 3,
+  maxLossStreak: 5,
+  lastLossStreak: 0,
+  instabilityStop: false,
+  // === Trailing defaults (kept for the engine; not exposed in the simplified UI) ===
   strategyType: "trailing",
-  autoPairScan: true,
-  scanSymbols: "XAUUSD,EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAGUSD",
+  autoPairScan: false,
+  scanSymbols: "XAUUSD",
   atrPeriod: 14,
   atrMultiplier: 1.5,
   emaFast: 9,
   emaSlow: 21,
   minAtrPrice: 0.1,
   breakevenAtr: 0.8,
-  maxTradeMinutes: 30,
+  maxTradeMinutes: 1,
   lastScanWinner: null,
 };
 

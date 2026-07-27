@@ -73,43 +73,48 @@ model BotConfig {
   tpPips          Float    @default(10)
   slPips          Float    @default(7)
   autoTpSl        Boolean  @default(true)
-  timeExitMinutes Int      @default(2)
+  timeExitMinutes Int      @default(1)
   minWickRatio    Float    @default(0.5)
   maxSpreadPips   Float    @default(3.0)
-  // High-frequency mode: open a trade at every M1 candle close (default OFF).
-  // When ON, the bot skips waiting for price to revisit the wick tip and fires
-  // immediately on every new closed M1 candle, choosing direction by the
-  // dominant wick (lower wick → BUY, upper wick → SELL, no wick → momentum).
+  // High-frequency mode: open a trade at every M1 candle close after wick touch.
+  // When ON: the bot opens a trade on every newly-closed 1-minute candle whose
+  // tail was touched by price. Direction is computed from the 1-minute trend
+  // (EMA fast vs slow). Up to `maxOpenPositions` trades can run concurrently;
+  // each trade auto-closes after `timeExitMinutes` (default 1 minute).
   highFrequencyMode Boolean @default(false)
   // Last M1 candle time the HF engine has already traded on (avoids duplicate
   // entries on the same candle). Stored as ISO string.
   lastHfCandleTime String?
 
-  // === Trailing Strategy fields (auto pair scan + auto entry + auto exit) ===
-  // strategyType: "wick" (legacy wick-rejection) | "trailing" (new ATR trailing).
+  // === Trade direction preference (user-selected in the simplified UI) ===
+  // "BUY"  → only BUY trades
+  // "SELL" → only SELL trades
+  // "AUTO" → let the strategy decide (trend-following)
+  tradeDirection  String   @default("AUTO")
+
+  // === Risk / position-management fields ===
+  // Maximum number of concurrent open trades the bot can hold (HF mode).
+  maxOpenPositions Int     @default(3)
+  // Number of consecutive losing trades that triggers the auto-stop safety
+  // ("السوق غير مستقر الآن"). Once hit, the bot stops itself.
+  maxLossStreak    Int     @default(5)
+  // Running counter of consecutive losing trades (reset on any win).
+  lastLossStreak   Int     @default(0)
+  // Flag set when the bot auto-stopped due to instability. Cleared on next
+  // manual start.
+  instabilityStop  Boolean @default(false)
+
+  // === Trailing Strategy fields (kept for the trailing-stop engine) ===
   strategyType    String   @default("trailing")
-  // autoPairScan: when true the bot scans a candidate symbol list each tick
-  // and picks the symbol with the strongest signal — the configured `symbol`
-  // becomes a fallback only.
-  autoPairScan    Boolean  @default(true)
-  // Comma-separated list of canonical symbols to scan when autoPairScan is on.
-  scanSymbols     String   @default("XAUUSD,EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAGUSD")
-  // ATR period (in candles) used for trailing distance and volatility filter.
+  autoPairScan    Boolean  @default(false)
+  scanSymbols     String   @default("XAUUSD")
   atrPeriod       Int      @default(14)
-  // ATR multiplier for the trailing stop distance (higher = wider, safer).
   atrMultiplier   Float    @default(1.5)
-  // EMA fast / slow periods for trend-direction detection.
   emaFast         Int      @default(9)
   emaSlow         Int      @default(21)
-  // Minimum ATR (in price units) below which we skip the symbol as "too quiet".
   minAtrPrice     Float    @default(0.10)
-  // Breakeven trigger: once price moves this many ATRs in our favor, move SL
-  // to entry price (locks the trade from loss).
   breakevenAtr    Float    @default(0.8)
-  // Hard stop: max minutes a trailing trade may stay open (safety net).
-  maxTradeMinutes Int      @default(30)
-  // Last symbol the trailing engine opened a trade on (used for display /
-  // debugging).
+  maxTradeMinutes Int      @default(1)
   lastScanWinner  String?
 
   botRunning      Boolean  @default(false)
