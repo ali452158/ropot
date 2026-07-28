@@ -181,14 +181,16 @@ export async function stopBot(sessionToken: string): Promise<{ ok: boolean; erro
       const exitPrice = price
         ? pos.direction === "BUY" ? price.bid : price.ask
         : pos.openPrice;
-      const profitPips = calculateProfitPips(pos.direction, pos.openPrice, exitPrice);
+      const pipValue = detectPipValue(pos.symbol);
+      const profitPips = calculateProfitPips(pos.direction, pos.openPrice, exitPrice, pipValue);
+      const profitUsd = profitPips * pipValue * (100 * (cfg.lotSize || 0.01));
       await db.trade.update({
         where: { id: pos.tradeId },
         data: {
           status: "CLOSED_MANUAL",
           exitPrice,
           profitPips,
-          profitUsd: profitPips * 1.0,
+          profitUsd,
           closedAt: new Date(),
           durationSeconds: Math.round((Date.now() - new Date(pos.openedAt).getTime()) / 1000),
         },
@@ -292,8 +294,8 @@ async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolea
   if (!price) return false;
 
   // PIP value per 1.0 lot
-  const pipValuePerLot = detectPipValue(ctx.symbol);
-  const trailDistancePrice = TRAIL_STEP_USD / (100 * (cfg.lotSize || 0.01)) / pipValuePerLot;
+  const pipValue = detectPipValue(ctx.symbol);
+  const trailDistancePrice = TRAIL_STEP_USD / (100 * (cfg.lotSize || 0.01)) / pipValue;
 
   const hfExitUsd = cfg.pyramidProfitUsd ?? 1.0;
   const snapshot = [...ctx.openPositions];
@@ -301,8 +303,11 @@ async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolea
 
   for (const pos of snapshot) {
     const currentPrice = pos.direction === "BUY" ? price.bid : price.ask;
-    const profitPips = calculateProfitPips(pos.direction, pos.openPrice, currentPrice);
-    const profitUsd = profitPips * (100 * (cfg.lotSize || 0.01));
+    const profitPips = calculateProfitPips(pos.direction, pos.openPrice, currentPrice, pipValue);
+    // CORRECT formula: profitUsd = profitPips × pipValue × contractSize × lotSize
+    // For XAUUSD 0.01 lot: profitUsd = profitPips × 0.1 × 100 × 0.01 = profitPips × 0.1
+    // So $1 profit = 10 pips (10 × 0.1 = $1)
+    const profitUsd = profitPips * pipValue * (100 * (cfg.lotSize || 0.01));
 
     // HF PROFIT EXIT — close at +$1
     if (profitUsd >= hfExitUsd) {
@@ -396,8 +401,9 @@ async function closeTradeInDb(
     }
   }
   const pipValue = detectPipValue(ctx.symbol);
-  const profitPips = calculateProfitPips(pos.direction, pos.openPrice, exitPrice);
-  const profitUsd = profitPips * (100 * (cfg.lotSize || 0.01));
+  const profitPips = calculateProfitPips(pos.direction, pos.openPrice, exitPrice, pipValue);
+  // CORRECT formula: profitUsd = profitPips × pipValue × contractSize × lotSize
+  const profitUsd = profitPips * pipValue * (100 * (cfg.lotSize || 0.01));
 
   try {
     await db.trade.update({
