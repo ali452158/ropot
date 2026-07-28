@@ -84,33 +84,17 @@ model BotConfig {
   // Last M1 candle time the HF engine has already traded on (avoids duplicate
   // entries on the same candle). Stored as ISO string.
   lastHfCandleTime String?
-
-  // === Trailing Strategy fields (auto pair scan + auto entry + auto exit) ===
-  // strategyType: "wick" (legacy wick-rejection) | "trailing" (new ATR trailing).
-  strategyType    String   @default("trailing")
-  // autoPairScan: when true the bot scans a candidate symbol list each tick
-  // and picks the symbol with the strongest signal — the configured `symbol`
-  // becomes a fallback only.
-  autoPairScan    Boolean  @default(true)
-  // Comma-separated list of canonical symbols to scan when autoPairScan is on.
-  scanSymbols     String   @default("XAUUSD,EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAGUSD")
-  // ATR period (in candles) used for trailing distance and volatility filter.
-  atrPeriod       Int      @default(14)
-  // ATR multiplier for the trailing stop distance (higher = wider, safer).
-  atrMultiplier   Float    @default(1.5)
-  // EMA fast / slow periods for trend-direction detection.
-  emaFast         Int      @default(9)
-  emaSlow         Int      @default(21)
-  // Minimum ATR (in price units) below which we skip the symbol as "too quiet".
-  minAtrPrice     Float    @default(0.10)
-  // Breakeven trigger: once price moves this many ATRs in our favor, move SL
-  // to entry price (locks the trade from loss).
-  breakevenAtr    Float    @default(0.8)
-  // Hard stop: max minutes a trailing trade may stay open (safety net).
-  maxTradeMinutes Int      @default(30)
-  // Last symbol the trailing engine opened a trade on (used for display /
-  // debugging).
-  lastScanWinner  String?
+  // V3+ pyramid fields (added 2026-07-28)
+  // Pyramid = a batch of N anchor trades opened at the same time on the same signal.
+  pyramidProfitUsd    Float    @default(1.0)  // HF exit: close trade at +\$1 OR -\$1
+  pyramidAnchorCount  Int      @default(3)    // Number of anchor trades per pyramid
+  pyramidMaxTrades    Int      @default(3)    // Max open trades per pyramid (no scaling when == anchor)
+  lastPyramidCandleTime String?  // Last 1m candle time a pyramid was opened on
+  tradeDirection      String   @default("AUTO")  // AUTO | BUY | SELL
+  // Instability guard
+  lastLossStreak      Int      @default(0)
+  maxLossStreak       Int      @default(5)
+  instabilityStop     Boolean  @default(false)
 
   botRunning      Boolean  @default(false)
   botStartedAt    DateTime?
