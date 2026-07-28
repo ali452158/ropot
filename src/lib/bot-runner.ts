@@ -61,7 +61,21 @@ import {
   detectWick,
   type Candle,
 } from "./strategy";
-import { sendMessage } from "./telegram";
+
+// ---------------- Types ----------------
+
+type OpenTrade = {
+  tradeId: string;
+  positionId: string;
+  direction: "BUY" | "SELL";
+  openPrice: number;
+  slPrice: number;
+  tpPrice: number;
+  openedAt: string;
+  symbol: string;
+  pyramidId: string;
+  lastTrailProfitUsd: number;
+};
 
 type OpenTrade = {
   tradeId: string;
@@ -239,9 +253,7 @@ export function listActiveSessions(): Array<{
 }
 
 export async function startBot(sessionToken: string): Promise<{ ok: boolean; error?: string }> {
-  if (activeSessions.has(sessionToken)) {
-    return { ok: true };
-  }
+  if (activeSessions.has(sessionToken)) return { ok: true };
   const session = await getSessionByToken(sessionToken);
   if (!session) return { ok: false, error: "session not found" };
   const internalId = session.id;
@@ -306,10 +318,7 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
 export async function stopBot(sessionToken: string): Promise<{ ok: boolean; error?: string }> {
   const ctx = activeSessions.get(sessionToken);
   if (!ctx) {
-    await db.botConfig.updateMany({
-      where: { botRunning: true },
-      data: { botRunning: false },
-    });
+    await db.botConfig.updateMany({ where: { botRunning: true }, data: { botRunning: false } });
     return { ok: true };
   }
   clearInterval(ctx.interval);
@@ -331,7 +340,9 @@ export async function stopBot(sessionToken: string): Promise<{ ok: boolean; erro
 async function tickOnce(ctx: ActiveSession) {
   const cfg = await db.botConfig.findUnique({ where: { sessionId: ctx.internalId } });
   if (!cfg || !cfg.botRunning) {
-    await stopBot(ctx.sessionToken);
+    // Stop the bot
+    if (ctx.interval) clearInterval(ctx.interval);
+    activeSessions.delete(ctx.sessionToken);
     return;
   }
 
@@ -1010,7 +1021,11 @@ export async function reconcilePositions() {
 }
 
 if (typeof setInterval !== "undefined") {
-  setInterval(() => {
-    reconcilePositions().catch(() => {});
+  setInterval(async () => {
+    for (const [token, ctx] of activeSessions) {
+      try {
+        await reconcilePositions(ctx, await db.botConfig.findUnique({ where: { sessionId: ctx.internalId } }) as any);
+      } catch {}
+    }
   }, 30_000);
 }
