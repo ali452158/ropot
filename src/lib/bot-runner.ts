@@ -335,7 +335,7 @@ async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolea
       continue;
     }
 
-    // Trailing stop — every $3 of profit, advance SL by $3 (price-distance)
+    // Fast trailing stop — every $0.50 of profit, advance SL by $0.50 (price-distance)
     if (profitUsd > 0 && profitUsd >= pos.lastTrailProfitUsd + TRAIL_STEP_USD) {
       let newSl: number;
       if (pos.direction === "BUY") {
@@ -345,7 +345,7 @@ async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolea
           pos.lastTrailProfitUsd = TRAIL_STEP_USD * Math.floor(profitUsd / TRAIL_STEP_USD);
           console.log(
             `[bot:${ctx.sessionToken}] TRAIL ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
-            `profit=$${profitUsd.toFixed(2)} -> SL=${pos.slPrice.toFixed(4)} (distance=${trailDistancePrice.toFixed(4)} = $3)`
+            `profit=$${profitUsd.toFixed(2)} -> SL=${pos.slPrice.toFixed(4)} (distance=${trailDistancePrice.toFixed(4)} = $${TRAIL_STEP_USD})`
           );
         }
       } else {
@@ -355,7 +355,7 @@ async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolea
           pos.lastTrailProfitUsd = TRAIL_STEP_USD * Math.floor(profitUsd / TRAIL_STEP_USD);
           console.log(
             `[bot:${ctx.sessionToken}] TRAIL ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
-            `profit=$${profitUsd.toFixed(2)} -> SL=${pos.slPrice.toFixed(4)} (distance=${trailDistancePrice.toFixed(4)} = $3)`
+            `profit=$${profitUsd.toFixed(2)} -> SL=${pos.slPrice.toFixed(4)} (distance=${trailDistancePrice.toFixed(4)} = $${TRAIL_STEP_USD})`
           );
         }
       }
