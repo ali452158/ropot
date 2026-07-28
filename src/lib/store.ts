@@ -53,6 +53,13 @@ export type BotConfigState = {
   pyramidMaxTrades: number;
   /** How many trades to open on the initial pyramid signal. */
   pyramidAnchorCount: number;
+  // === Single-trade strategy fields (used for non-XAUUSD pairs) ===
+  /** Strategy mode auto-selected: "pyramid" for XAUUSD, "single" otherwise. */
+  strategyMode: "pyramid" | "single";
+  /** SL threshold in USD — bot closes when floating P/L <= -singleSlUsd. */
+  singleSlUsd: number;
+  /** TP threshold in USD — bot closes when floating P/L >= +singleTpUsd. */
+  singleTpUsd: number;
   // === Trailing strategy fields (server-side only; UI doesn't expose these) ===
   strategyType: "trailing" | "wick";
   autoPairScan: boolean;
@@ -153,6 +160,10 @@ const defaultBotConfig: BotConfigState = {
   pyramidProfitUsd: 2.0,
   pyramidMaxTrades: 6,
   pyramidAnchorCount: 2,
+  // === Single-trade strategy defaults (for non-XAUUSD pairs) ===
+  strategyMode: "pyramid",
+  singleSlUsd: 3.0,
+  singleTpUsd: 10.0,
   // === Trailing defaults (kept for the engine; not exposed in the simplified UI) ===
   strategyType: "trailing",
   autoPairScan: false,

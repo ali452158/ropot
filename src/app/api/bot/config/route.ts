@@ -45,6 +45,10 @@ export async function GET(req: NextRequest) {
           pyramidProfitUsd: 2.0,
           pyramidMaxTrades: 6,
           pyramidAnchorCount: 2,
+          // Single-trade strategy defaults (used when symbol != XAUUSD):
+          strategyMode: "pyramid",  // XAUUSD by default → pyramid strategy
+          singleSlUsd: 3.0,
+          singleTpUsd: 10.0,
           // Trailing-strategy defaults:
           strategyType: "trailing",
           autoPairScan: false,
@@ -98,6 +102,10 @@ export async function POST(req: NextRequest) {
       "pyramidProfitUsd",
       "pyramidMaxTrades",
       "pyramidAnchorCount",
+      // Single-trade strategy fields (used when symbol != XAUUSD):
+      "strategyMode",
+      "singleSlUsd",
+      "singleTpUsd",
       // Engine-managed fields (server updates these; user cannot set directly):
       "lastLossStreak",
       "instabilityStop",
@@ -144,6 +152,10 @@ export async function POST(req: NextRequest) {
         pyramidProfitUsd: patch.pyramidProfitUsd ?? 2.0,
         pyramidMaxTrades: patch.pyramidMaxTrades ?? 6,
         pyramidAnchorCount: patch.pyramidAnchorCount ?? 2,
+        // Single-trade strategy fields:
+        strategyMode: patch.strategyMode ?? (patch.symbol?.toUpperCase() === "XAUUSD" ? "pyramid" : "single"),
+        singleSlUsd: patch.singleSlUsd ?? 3.0,
+        singleTpUsd: patch.singleTpUsd ?? 10.0,
         strategyType: patch.strategyType ?? "trailing",
         autoPairScan: patch.autoPairScan ?? false,
         scanSymbols: patch.scanSymbols ?? "XAUUSD",

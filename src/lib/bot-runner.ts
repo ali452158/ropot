@@ -102,6 +102,10 @@ type ActiveSession = {
   timeframe: string;
   interval: NodeJS.Timeout;
   openPositions: OpenTrade[];
+  // === Strategy mode (auto-selected on start) ===
+  // "pyramid"  → multi-trade pyramid strategy (XAUUSD only)
+  // "single"   → single-trade USD-based SL/TP (all non-XAUUSD pairs)
+  strategyMode: "pyramid" | "single";
   // === Pyramid tracking ===
   currentPyramidId: string | null;       // null = no active pyramid (ready for next)
   pyramidDirection: "BUY" | "SELL" | null;
@@ -113,6 +117,9 @@ type ActiveSession = {
   pyramidEvaluating: boolean;
   // === In-memory candle marker ===
   inMemoryLastPyramidCandleTime: string | null;
+  // === Single-trade strategy tracking ===
+  inMemoryLastSingleCandleTime: string | null;
+  singleEvaluating: boolean;
 };
 
 const activeSessions = new Map<string, ActiveSession>();
@@ -265,6 +272,8 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
   }
 
   // Reset on fresh manual start.
+  // Auto-select strategy based on symbol: XAUUSD = pyramid, everything else = single.
+  const strategyMode: "pyramid" | "single" = cfg.symbol.toUpperCase() === "XAUUSD" ? "pyramid" : "single";
   await db.botConfig.update({
     where: { sessionId: internalId },
     data: {
@@ -273,6 +282,8 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
       instabilityStop: false,
       lastLossStreak: 0,
       lastPyramidCandleTime: null,
+      lastSingleCandleTime: null,
+      strategyMode,
     },
   });
 
@@ -285,6 +296,7 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
     timeframe: cfg.timeframe,
     interval: null as any,
     openPositions: [],
+    strategyMode,
     currentPyramidId: null,
     pyramidDirection: null,
     pyramidAnchorSl: null,
@@ -293,6 +305,8 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
     pyramidMaxTrades: cfg.pyramidMaxTrades ?? 6,
     pyramidEvaluating: false,
     inMemoryLastPyramidCandleTime: cfg.lastPyramidCandleTime ?? null,
+    inMemoryLastSingleCandleTime: cfg.lastSingleCandleTime ?? null,
+    singleEvaluating: false,
   };
 
   const tickMs = 1000;
@@ -349,6 +363,8 @@ async function tickOnce(ctx: ActiveSession) {
   if (cfg.symbol !== ctx.symbol || cfg.timeframe !== ctx.timeframe) {
     ctx.symbol = cfg.symbol;
     ctx.timeframe = cfg.timeframe;
+    // Re-select strategy on symbol change
+    ctx.strategyMode = cfg.symbol.toUpperCase() === "XAUUSD" ? "pyramid" : "single";
   }
   ctx.pyramidAnchorCount = cfg.pyramidAnchorCount ?? 2;
   ctx.pyramidMaxTrades = cfg.pyramidMaxTrades ?? 6;
@@ -356,11 +372,12 @@ async function tickOnce(ctx: ActiveSession) {
   // 1) Reconcile in-memory openPositions against broker state.
   await reconcileOpenPositions(ctx, cfg);
 
-  // 2) Manage each open position (TP hit / shared SL hit).
+  // 2) Manage each open position (TP hit / shared SL hit / USD-based SL/TP for single).
   const pyramidClosedBySL = await manageOpenPositions(ctx, cfg);
 
-  // 3) If the shared anchor SL was hit, ALL trades have been closed above.
-  //    Reset pyramid state so the next tick can look for a new signal.
+  // 3) If the shared anchor SL was hit (pyramid mode), ALL trades have been
+  //    closed above. Reset pyramid state so the next tick can look for a new
+  //    signal.
   if (pyramidClosedBySL) {
     console.log(
       `[bot:${ctx.sessionToken}] pyramid ${ctx.currentPyramidId} closed by SHARED SL — ready for next signal`
@@ -377,6 +394,22 @@ async function tickOnce(ctx: ActiveSession) {
     return;
   }
 
+  // 5) BRANCH on strategy mode:
+  //    - "pyramid": multi-trade strategy (XAUUSD) — open + scale + shared SL
+  //    - "single" : single-trade strategy (all non-XAUUSD) — ONE trade at a time
+  //                  with USD-based TP ($10) / SL ($3) managed in manageOpenPositions.
+  if (ctx.strategyMode === "single") {
+    // Single-trade: no entry while a trade is open. Wait for it to close
+    // (TP or SL in USD) before evaluating a new signal.
+    if (ctx.openPositions.length > 0) {
+      return;
+    }
+    // Clear any stale state — single strategy has no pyramid state.
+    await evaluateSingleEntry(ctx, cfg);
+    return;
+  }
+
+  // === PYRAMID MODE (XAUUSD) ===
   // 5) PYRAMID ENTRY: only when no pyramid is active (all trades closed).
   if (ctx.openPositions.length > 0) {
     // Pyramid is active — check for scaling opportunity instead.
@@ -495,15 +528,42 @@ async function manageOpenPositions(
   }
 
   // === 2) Check each trade's individual TP ===
+  //     In pyramid mode → use the trade's own TP price.
+  //     In single  mode → use USD-based TP/SL via the broker's floating
+  //                       P/L (more accurate across different pip values).
   const snapshot = [...ctx.openPositions];
   for (const op of snapshot) {
-    const tpHit =
-      op.direction === "BUY"
-        ? price.bid >= op.tpPrice
-        : price.ask <= op.tpPrice;
-    if (tpHit) {
-      const exitPrice = op.tpPrice;
-      await closeTradeRow(ctx, cfg, op, "TP", exitPrice);
+    if (ctx.strategyMode === "single") {
+      // USD-based exit: pull the broker-reported floating profit (USD).
+      const brokerPositions = await getOpenPositions(ctx.mt5Login, ctx.metaApiAccountId);
+      const brokerPos = brokerPositions.find((p) => p.id === op.positionId);
+      const floatingUsd = brokerPos?.profit ?? 0;
+      const tpUsd = cfg.singleTpUsd ?? 10.0;
+      const slUsd = cfg.singleSlUsd ?? 3.0;
+
+      if (floatingUsd >= tpUsd) {
+        const exitPrice = op.direction === "BUY" ? price.bid : price.ask;
+        console.log(
+          `[bot:${ctx.sessionToken}] SINGLE TP HIT — profit $${floatingUsd.toFixed(2)} ≥ $${tpUsd} — closing ${op.direction} ${ctx.symbol}`
+        );
+        await closeTradeRow(ctx, cfg, op, "TP", exitPrice, floatingUsd);
+      } else if (floatingUsd <= -slUsd) {
+        const exitPrice = op.direction === "BUY" ? price.bid : price.ask;
+        console.log(
+          `[bot:${ctx.sessionToken}] SINGLE SL HIT — loss $${floatingUsd.toFixed(2)} ≤ -$${slUsd} — closing ${op.direction} ${ctx.symbol}`
+        );
+        await closeTradeRow(ctx, cfg, op, "SL", exitPrice, floatingUsd);
+      }
+    } else {
+      // Pyramid mode: trade's own TP price (price-based)
+      const tpHit =
+        op.direction === "BUY"
+          ? price.bid >= op.tpPrice
+          : price.ask <= op.tpPrice;
+      if (tpHit) {
+        const exitPrice = op.tpPrice;
+        await closeTradeRow(ctx, cfg, op, "TP", exitPrice);
+      }
     }
   }
 
@@ -593,6 +653,145 @@ async function evaluatePyramidEntry(ctx: ActiveSession, cfg: any) {
   } finally {
     ctx.pyramidEvaluating = false;
   }
+}
+
+// =========================================================================
+//  SINGLE-TRADE ENTRY (one trade at a time — for non-XAUUSD pairs)
+// =========================================================================
+//
+// Strategy:
+//   - On every newly-closed candle, compute EMA9 vs EMA21 trend.
+//   - If user picked "BUY only" / "SELL only", force that direction.
+//   - Otherwise (AUTO), follow the EMA trend.
+//   - Open ONE trade with no broker-side SL/TP (the bot-side manages the
+//     exit by watching the broker's floating P/L in USD).
+//   - Exit when floating profit >= +singleTpUsd (TP) or <= -singleSlUsd (SL).
+//   - After exit, wait for the NEXT new candle before opening another trade
+//     (prevents re-entering on the same candle that just closed the trade).
+//
+// The bot already opens at most ONE trade per pyramid (single mode is just
+// pyramid with anchorCount=1, maxTrades=1) — but we keep the logic separate
+// for clarity + to skip the wick filter (single strategy trades on trend
+// alone, not on wick rejection).
+
+async function evaluateSingleEntry(ctx: ActiveSession, cfg: any) {
+  // === CONCURRENCY GUARD ===
+  if (ctx.singleEvaluating) return;
+  ctx.singleEvaluating = true;
+  try {
+    await evaluateSingleEntryInner(ctx, cfg);
+  } finally {
+    ctx.singleEvaluating = false;
+  }
+}
+
+async function evaluateSingleEntryInner(ctx: ActiveSession, cfg: any) {
+  const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 50, ctx.mt5Login);
+  const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
+  if (!candles.length || !price) return;
+
+  const lastSingleTime =
+    ctx.inMemoryLastSingleCandleTime ?? cfg.lastSingleCandleTime ?? null;
+  const closedCandle = pickNewClosedCandle(candles, lastSingleTime);
+  if (!closedCandle) return;
+
+  // === IMMEDIATELY mark this candle as processed (in-memory, sync) ===
+  ctx.inMemoryLastSingleCandleTime = closedCandle.time;
+  try {
+    await db.botConfig.update({
+      where: { sessionId: ctx.internalId },
+      data: { lastSingleCandleTime: closedCandle.time },
+    });
+  } catch {
+    /* ignore — in-memory mirror is authoritative */
+  }
+
+  // === Spread filter (still useful — don't enter on wide spreads) ===
+  const pipValue = detectPipValue(price.ask);
+  const spreadPips = (price.ask - price.bid) / pipValue;
+  if (spreadPips > cfg.maxSpreadPips) {
+    console.log(
+      `[bot:${ctx.sessionToken}] single skip: spread ${spreadPips.toFixed(2)}p > max ${cfg.maxSpreadPips}p`
+    );
+    return;
+  }
+
+  // === Trend detection on the configured timeframe ===
+  const closes = candles.map((c) => c.close);
+  const emaFast = computeEMA(closes, cfg.emaFast);
+  const emaSlow = computeEMA(closes, cfg.emaSlow);
+  if (emaFast == null || emaSlow == null) {
+    console.log(`[bot:${ctx.sessionToken}] single skip: EMA computation failed`);
+    return;
+  }
+  const trendDir: "BUY" | "SELL" = emaFast > emaSlow ? "BUY" : "SELL";
+
+  // === Direction selection (respect user's BUY/SELL/AUTO choice) ===
+  let direction: "BUY" | "SELL";
+  if (cfg.tradeDirection === "BUY") {
+    direction = "BUY";
+  } else if (cfg.tradeDirection === "SELL") {
+    direction = "SELL";
+  } else {
+    direction = trendDir;
+  }
+
+  // === Compute SL/TP prices for the broker-side safety net ===
+  // We compute approximate SL/TP prices from the USD targets, so the
+  // broker still has a fallback in case the bot goes offline. The
+  // bot-side USD watcher is the authoritative exit trigger.
+  //
+  // For a 1.0 lot on a USD-quoted pair (EURUSD, GBPUSD): 1 pip ≈ $10.
+  // For 0.01 lot: 1 pip ≈ $0.10. So SL ($3) ≈ 30 pips for 0.01 lot.
+  // We use a conservative pipValue-per-lot estimate of $10 to compute a
+  // broker-side SL/TP distance — this is intentionally loose, the bot-side
+  // USD watcher is precise.
+  const usdPerPipPerLot = 10; // approximate for USD-quoted pairs
+  const slUsd = cfg.singleSlUsd ?? 3.0;
+  const tpUsd = cfg.singleTpUsd ?? 10.0;
+  const slPipsApprox = (slUsd / usdPerPipPerLot) / Math.max(cfg.lotSize, 0.01);
+  const tpPipsApprox = (tpUsd / usdPerPipPerLot) / Math.max(cfg.lotSize, 0.01);
+
+  const entry = direction === "BUY" ? price.ask : price.bid;
+  const slPrice = direction === "BUY"
+    ? entry - slPipsApprox * pipValue
+    : entry + slPipsApprox * pipValue;
+  const tpPrice = direction === "BUY"
+    ? entry + tpPipsApprox * pipValue
+    : entry - tpPipsApprox * pipValue;
+
+  const pyramidId = `single-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Mark as a "single" pyramid so the rest of the engine sees it as active
+  // and skips new entries while it's open.
+  ctx.currentPyramidId = pyramidId;
+  ctx.pyramidDirection = direction;
+  ctx.pyramidAnchorSl = slPrice; // not used for single, kept for compat
+  ctx.pyramidOpenedAt = new Date().toISOString();
+
+  console.log(
+    `[bot:${ctx.sessionToken}] SINGLE OPEN ${direction} ${cfg.symbol} @ ${entry.toFixed(4)} ` +
+    `SL≈${slPrice.toFixed(4)} TP≈${tpPrice.toFixed(4)} (USD target: -$${slUsd}/+$${tpUsd}) trend=${trendDir}`
+  );
+
+  await notifyTrade("OPEN", ctx, {
+    direction,
+    symbol: cfg.symbol,
+    lotSize: cfg.lotSize,
+    openPrice: entry,
+    reason: `Single ${direction} — trend=${trendDir} (EMA9=${emaFast.toFixed(4)} ${trendDir === "BUY" ? ">" : "<"} EMA21=${emaSlow.toFixed(4)}), SL=-$${slUsd} TP=+$${tpUsd}`,
+  });
+
+  // Open the single trade
+  await executeEntry(ctx, cfg, {
+    direction,
+    symbol: cfg.symbol,
+    entry,
+    slPrice,
+    tpPrice,
+    isAnchor: true,
+    pyramidId,
+    reason: `Single ${direction} — trend=${trendDir}, SL=-$${slUsd} TP=+$${tpUsd}`,
+  });
 }
 
 async function evaluatePyramidEntryInner(ctx: ActiveSession, cfg: any) {
@@ -809,8 +1008,9 @@ async function closeTradeRow(
   ctx: ActiveSession,
   cfg: any,
   op: OpenTrade,
-  reason: "TP" | "SHARED_SL" | "MANUAL",
-  forcedExitPrice?: number
+  reason: "TP" | "SHARED_SL" | "MANUAL" | "SL",
+  forcedExitPrice?: number,
+  forcedProfitUsd?: number
 ) {
   // Close at broker (idempotent — if the position is already gone, this is
   // a no-op).
@@ -831,11 +1031,14 @@ async function closeTradeRow(
     (op.direction === "BUY"
       ? exitPrice - op.openPrice
       : op.openPrice - exitPrice) / pipValue;
-  const profitUsd = profitPips * (cfg.lotSize * 100);
+  // Use the broker-reported floating USD when available (single strategy);
+  // otherwise estimate from pips × lotSize × 100 (pyramid strategy).
+  const profitUsd =
+    forcedProfitUsd != null ? forcedProfitUsd : profitPips * (cfg.lotSize * 100);
 
   const status =
     reason === "TP" ? "CLOSED_TP"
-    : reason === "SHARED_SL" ? "CLOSED_SL"
+    : reason === "SHARED_SL" || reason === "SL" ? "CLOSED_SL"
     : "CLOSED_MANUAL";
 
   if (!op.tradeId.startsWith("external-")) {
@@ -863,9 +1066,9 @@ async function closeTradeRow(
 
   // === Update the loss streak ===
   let newStreak = cfg.lastLossStreak || 0;
-  if (profitPips < 0) {
+  if (profitUsd < 0) {
     newStreak += 1;
-  } else if (profitPips > 0) {
+  } else if (profitUsd > 0) {
     newStreak = 0;
   }
 
@@ -888,9 +1091,13 @@ async function closeTradeRow(
     profitPips,
     profitUsd,
     reason: reason === "TP"
-      ? "TP (3×SL)"
+      ? ctx.strategyMode === "single"
+        ? `TP +$${(cfg.singleTpUsd ?? 10).toFixed(2)} (USD)`
+        : "TP (3×SL)"
       : reason === "SHARED_SL"
       ? "SHARED ANCHOR SL — closed all pyramid trades"
+      : reason === "SL"
+      ? `SL -$${(cfg.singleSlUsd ?? 3).toFixed(2)} (USD)`
       : reason,
   });
 

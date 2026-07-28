@@ -139,6 +139,24 @@ model BotConfig {
   //                       same candle).
   lastPyramidCandleTime String?
 
+  // === SINGLE-TRADE STRATEGY (for non-gold pairs: EURUSD, GBPUSD, etc.) ===
+  //
+  // For all pairs EXCEPT XAUUSD, the bot uses a single-trade strategy:
+  //   - Opens ONE trade per qualifying signal (EMA9/EMA21 trend-aligned).
+  //   - Does NOT open another trade until the current one closes.
+  //   - Exit is USD-based: closes when floating profit hits ±singleTpUsd /
+  //     -singleSlUsd (default +$10 TP / -$3 SL).
+  //   - The bot reads the broker's reported floating P/L (USD) on every tick,
+  //     so it works correctly for ANY pair regardless of pip value / lot size.
+  //
+  // The strategy is auto-selected when symbol != "XAUUSD" — set
+  // strategyMode = "single" on bot start. For XAUUSD, the Pyramid strategy
+  // remains active (strategyMode = "pyramid").
+  strategyMode      String   @default("pyramid")  // "pyramid" | "single"
+  singleSlUsd       Float    @default(3.0)       // SL in USD (loss threshold)
+  singleTpUsd       Float    @default(10.0)      // TP in USD (profit threshold)
+  lastSingleCandleTime String?  // last M1 candle the single-strategy acted on
+
   // === Trailing Strategy fields (kept for the trailing-stop engine) ===
   strategyType    String   @default("trailing")
   autoPairScan    Boolean  @default(false)

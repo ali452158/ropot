@@ -39,8 +39,12 @@ import {
   ChevronDown,
 } from "lucide-react";
 
-const FOREX_SYMBOLS = [
+const FOREX_SYMBOLS_GOLD = [
   { value: "XAUUSD", label: "XAUUSD — الذهب" },
+  { value: "XAGUSD", label: "XAGUSD — الفضة" },
+];
+
+const FOREX_SYMBOLS_PAIRS = [
   { value: "EURUSD", label: "EURUSD — اليورو/دولار" },
   { value: "GBPUSD", label: "GBPUSD — الجنيه/دولار" },
   { value: "USDJPY", label: "USDJPY — الدولار/ين" },
@@ -50,7 +54,6 @@ const FOREX_SYMBOLS = [
   { value: "USDCHF", label: "USDCHF — الدولار الفرنك" },
   { value: "EURJPY", label: "EURJPY — اليورو/ين" },
   { value: "GBPJPY", label: "GBPJPY — الجنيه/ين" },
-  { value: "XAGUSD", label: "XAGUSD — الفضة" },
   { value: "EURGBP", label: "EURGBP — اليورو/جنيه" },
   { value: "EURAUD", label: "EURAUD — اليورو/أسترالي" },
   { value: "AUDJPY", label: "AUDJPY — الأسترالي/ين" },
@@ -111,6 +114,10 @@ export function DashboardScreen() {
           pyramidProfitUsd: cfgData.config.pyramidProfitUsd ?? 2.0,
           pyramidMaxTrades: cfgData.config.pyramidMaxTrades ?? 6,
           pyramidAnchorCount: cfgData.config.pyramidAnchorCount ?? 2,
+          // Single-trade strategy fields
+          strategyMode: cfgData.config.strategyMode ?? "pyramid",
+          singleSlUsd: cfgData.config.singleSlUsd ?? 3.0,
+          singleTpUsd: cfgData.config.singleTpUsd ?? 10.0,
           botRunning: cfgData.config.botRunning,
           botStartedAt: cfgData.config.botStartedAt,
         });
@@ -408,19 +415,41 @@ export function DashboardScreen() {
               </Badge>
             </div>
 
-            {/* Symbol */}
+            {/* Symbol — grouped: Gold/Silver (pyramid) + Forex pairs (single) */}
             <div className="space-y-1.5">
               <Label className="text-xs text-cyan-200/70">الزوج</Label>
               <Select
                 value={botConfig.symbol}
-                onValueChange={(v) => updateConfig({ symbol: v })}
+                onValueChange={(v) => {
+                  // Auto-switch strategy: pyramid for XAUUSD/XAGUSD, single otherwise.
+                  const isGold = v === "XAUUSD" || v === "XAGUSD";
+                  updateConfig({
+                    symbol: v,
+                    strategyMode: isGold ? "pyramid" : "single",
+                  });
+                }}
                 disabled={botConfig.botRunning}
               >
                 <SelectTrigger className="bg-black/40 border-cyan-500/30 text-cyan-50 font-mono h-11 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-black/90 border-cyan-500/30 max-h-72">
-                  {FOREX_SYMBOLS.map((s) => (
+                  <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-amber-300/70">
+                    🥇 معادن (Pyramid)
+                  </div>
+                  {FOREX_SYMBOLS_GOLD.map((s) => (
+                    <SelectItem
+                      key={s.value}
+                      value={s.value}
+                      className="text-cyan-100 focus:bg-cyan-500/20 focus:text-cyan-50"
+                    >
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                  <div className="px-2 py-1 mt-1 text-[10px] uppercase tracking-wide text-cyan-300/70">
+                    💱 أزواج فوركس (Single)
+                  </div>
+                  {FOREX_SYMBOLS_PAIRS.map((s) => (
                     <SelectItem
                       key={s.value}
                       value={s.value}
@@ -431,6 +460,18 @@ export function DashboardScreen() {
                   ))}
                 </SelectContent>
               </Select>
+              {/* Strategy badge */}
+              <div className="text-[10px] text-cyan-200/50">
+                {botConfig.strategyMode === "pyramid" ? (
+                  <span className="text-amber-300">
+                    🥞 استراتيجية Pyramid: 2 صفقات → scale حتى 6 (SL=7 pips / TP=21 pips)
+                  </span>
+                ) : (
+                  <span className="text-cyan-300">
+                    🎯 استراتيجية Single: صفقة واحدة فقط — SL=${botConfig.singleSlUsd} / TP=${botConfig.singleTpUsd}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Timeframe */}
@@ -541,74 +582,132 @@ export function DashboardScreen() {
               </p>
             </div>
 
-            {/* Pyramid parameters */}
-            <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
-                <div className="text-[10px] text-cyan-200/60 mb-1">صفقات أولية</div>
-                <Input
-                  type="number"
-                  min={1}
-                  max={3}
-                  step={1}
-                  value={botConfig.pyramidAnchorCount}
-                  onChange={(e) =>
-                    setBotConfig({
-                      pyramidAnchorCount: Math.max(1, Math.min(3, Number(e.target.value) || 1)),
-                    })
-                  }
-                  onBlur={(e) =>
-                    updateConfig({ pyramidAnchorCount: Number(e.target.value) || 2 })
-                  }
-                  disabled={botConfig.botRunning}
-                  className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
-                />
-              </div>
-              <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
-                <div className="text-[10px] text-cyan-200/60 mb-1">حد الصفقات</div>
-                <Input
-                  type="number"
-                  min={2}
-                  max={10}
-                  step={1}
-                  value={botConfig.pyramidMaxTrades}
-                  onChange={(e) =>
-                    setBotConfig({
-                      pyramidMaxTrades: Math.max(2, Math.min(10, Number(e.target.value) || 2)),
-                    })
-                  }
-                  onBlur={(e) =>
-                    updateConfig({ pyramidMaxTrades: Number(e.target.value) || 6 })
-                  }
-                  disabled={botConfig.botRunning}
-                  className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
-                />
-              </div>
-              <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
-                <div className="text-[10px] text-cyan-200/60 mb-1">ربح التدرج ($)</div>
-                <Input
-                  type="number"
-                  min={0.5}
-                  max={20}
-                  step={0.5}
-                  value={botConfig.pyramidProfitUsd}
-                  onChange={(e) =>
-                    setBotConfig({
-                      pyramidProfitUsd: Math.max(0.5, Math.min(20, Number(e.target.value) || 0.5)),
-                    })
-                  }
-                  onBlur={(e) =>
-                    updateConfig({ pyramidProfitUsd: Number(e.target.value) || 2 })
-                  }
-                  disabled={botConfig.botRunning}
-                  className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
-                />
-              </div>
-            </div>
-            <p className="text-[10px] text-cyan-200/40 leading-relaxed -mt-1">
-              صفقات أولية = عدد الصفقات اللي تفتح عند الإشارة. حد الصفقات = أقصى عدد للصفقات
-              المفتوحة في الهرم. ربح التدرج = كل ما ربحت أي صفقة هذا المبلغ يفتح صفقة جديدة.
-              الهدف دائماً 3× الاستوب. ضرب استوب الصفقات الأولى يغلق كل الصفقات.
-            </p>
+            {/* === Conditional settings: Pyramid (gold) vs Single (other pairs) === */}
+            {botConfig.strategyMode === "pyramid" ? (
+              <>
+                {/* Pyramid parameters */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">صفقات أولية</div>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={3}
+                      step={1}
+                      value={botConfig.pyramidAnchorCount}
+                      onChange={(e) =>
+                        setBotConfig({
+                          pyramidAnchorCount: Math.max(1, Math.min(3, Number(e.target.value) || 1)),
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ pyramidAnchorCount: Number(e.target.value) || 2 })
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
+                    />
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">حد الصفقات</div>
+                    <Input
+                      type="number"
+                      min={2}
+                      max={10}
+                      step={1}
+                      value={botConfig.pyramidMaxTrades}
+                      onChange={(e) =>
+                        setBotConfig({
+                          pyramidMaxTrades: Math.max(2, Math.min(10, Number(e.target.value) || 2)),
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ pyramidMaxTrades: Number(e.target.value) || 6 })
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
+                    />
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">ربح التدرج ($)</div>
+                    <Input
+                      type="number"
+                      min={0.5}
+                      max={20}
+                      step={0.5}
+                      value={botConfig.pyramidProfitUsd}
+                      onChange={(e) =>
+                        setBotConfig({
+                          pyramidProfitUsd: Math.max(0.5, Math.min(20, Number(e.target.value) || 0.5)),
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ pyramidProfitUsd: Number(e.target.value) || 2 })
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-cyan-500/20 text-cyan-100 text-sm font-mono"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-cyan-200/40 leading-relaxed -mt-1">
+                  صفقات أولية = عدد الصفقات اللي تفتح عند الإشارة. حد الصفقات = أقصى عدد للصفقات
+                  المفتوحة في الهرم. ربح التدرج = كل ما ربحت أي صفقة هذا المبلغ يفتح صفقة جديدة.
+                  الهدف دائماً 3× الاستوب. ضرب استوب الصفقات الأولى يغلق كل الصفقات.
+                </p>
+              </>
+            ) : (
+              <>
+                {/* Single-trade strategy parameters (USD-based SL/TP) */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg bg-black/30 border border-amber-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">الستوب (USD)</div>
+                    <Input
+                      type="number"
+                      min={0.5}
+                      max={100}
+                      step={0.5}
+                      value={botConfig.singleSlUsd}
+                      onChange={(e) =>
+                        setBotConfig({
+                          singleSlUsd: Math.max(0.5, Math.min(100, Number(e.target.value) || 0.5)),
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ singleSlUsd: Number(e.target.value) || 3 })
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-amber-500/20 text-amber-100 text-sm font-mono"
+                    />
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-green-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">الهدف (USD)</div>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      value={botConfig.singleTpUsd}
+                      onChange={(e) =>
+                        setBotConfig({
+                          singleTpUsd: Math.max(1, Math.min(500, Number(e.target.value) || 1)),
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ singleTpUsd: Number(e.target.value) || 10 })
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-green-500/20 text-green-100 text-sm font-mono"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-cyan-200/40 leading-relaxed -mt-1">
+                  🎯 <b className="text-cyan-200">استراتيجية Single:</b> البوت يفتح صفقة واحدة فقط
+                  بناءً على اتجاه EMA9/EMA21. لا يفتح صفقة جديدة حتى تُغلق الحالية. الإغلاق يكون
+                  بالدولار: إذا وصل ربح الصفقة إلى <b className="text-green-300">+${botConfig.singleTpUsd}</b> تُغلق
+                  كربح، وإذا وصل خسارة إلى <b className="text-red-300">-${botConfig.singleSlUsd}</b> تُغلق
+                  كخسارة. يعمل مع أي زوج وأي حجم لوت لأن الإغلاق يعتمد على floating P/L الفعلي من الوسيط.
+                </p>
+              </>
+            )}
 
             {/* Loss-streak counter (display only) */}
             <div className="rounded-lg bg-black/30 border border-cyan-500/10 p-2.5 flex items-center justify-between">
