@@ -688,12 +688,30 @@ async function evaluateSingleEntry(ctx: ActiveSession, cfg: any) {
 async function evaluateSingleEntryInner(ctx: ActiveSession, cfg: any) {
   const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 50, ctx.mt5Login);
   const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
-  if (!candles.length || !price) return;
+  if (!candles.length) {
+    console.log(`[bot:${ctx.sessionToken}] single skip: no candles for ${cfg.symbol} (${cfg.timeframe})`);
+    return;
+  }
+  if (!price) {
+    console.log(`[bot:${ctx.sessionToken}] single skip: no price for ${cfg.symbol}`);
+    return;
+  }
 
   const lastSingleTime =
     ctx.inMemoryLastSingleCandleTime ?? cfg.lastSingleCandleTime ?? null;
   const closedCandle = pickNewClosedCandle(candles, lastSingleTime);
-  if (!closedCandle) return;
+  if (!closedCandle) {
+    // No new closed candle since last cycle — this is normal, but log once
+    // per ~30s so user can see the bot is alive but waiting.
+    if ((evaluateSingleEntryInner._lastWaitLog ?? 0) < Date.now() - 30_000) {
+      console.log(
+        `[bot:${ctx.sessionToken}] single wait: no new closed ${cfg.timeframe} candle for ${cfg.symbol} ` +
+        `(last=${lastSingleTime ?? "none"})`
+      );
+      evaluateSingleEntryInner._lastWaitLog = Date.now();
+    }
+    return;
+  }
 
   // === IMMEDIATELY mark this candle as processed (in-memory, sync) ===
   ctx.inMemoryLastSingleCandleTime = closedCandle.time;
@@ -707,11 +725,26 @@ async function evaluateSingleEntryInner(ctx: ActiveSession, cfg: any) {
   }
 
   // === Spread filter (still useful — don't enter on wide spreads) ===
+  // === Auto-tune max spread per symbol category ===
+  // Default cfg.maxSpreadPips = 3.0 is too tight for JPY crosses (typical
+  // spread 5-15 pips on GBPJPY/EURJPY/AUDJPY) and slightly tight for exotic
+  // crosses. We compute a per-symbol floor here and use the higher of the
+  // two (configured vs floor) so we never reject an entry purely because
+  // the configured value was left at 3.0 for a JPY pair.
+  const sym = cfg.symbol.toUpperCase();
+  let spreadFloor = 3.0;
+  if (sym.includes("JPY")) spreadFloor = 8.0;        // JPY crosses
+  else if (sym === "GBPUSD") spreadFloor = 3.5;
+  else if (sym === "EURGBP" || sym === "EURAUD") spreadFloor = 5.0;
+  else if (sym === "XAGUSD") spreadFloor = 5.0;
+  const effectiveMaxSpread = Math.max(cfg.maxSpreadPips ?? 3.0, spreadFloor);
+
   const pipValue = detectPipValue(price.ask);
   const spreadPips = (price.ask - price.bid) / pipValue;
-  if (spreadPips > cfg.maxSpreadPips) {
+  if (spreadPips > effectiveMaxSpread) {
     console.log(
-      `[bot:${ctx.sessionToken}] single skip: spread ${spreadPips.toFixed(2)}p > max ${cfg.maxSpreadPips}p`
+      `[bot:${ctx.sessionToken}] single skip: spread ${spreadPips.toFixed(2)}p > max ${effectiveMaxSpread.toFixed(1)}p ` +
+      `(cfg=${cfg.maxSpreadPips}, floor=${spreadFloor}) — ${cfg.symbol}`
     );
     return;
   }
@@ -721,7 +754,9 @@ async function evaluateSingleEntryInner(ctx: ActiveSession, cfg: any) {
   const emaFast = computeEMA(closes, cfg.emaFast);
   const emaSlow = computeEMA(closes, cfg.emaSlow);
   if (emaFast == null || emaSlow == null) {
-    console.log(`[bot:${ctx.sessionToken}] single skip: EMA computation failed`);
+    console.log(
+      `[bot:${ctx.sessionToken}] single skip: EMA computation failed (closes=${closes.length})`
+    );
     return;
   }
   const trendDir: "BUY" | "SELL" = emaFast > emaSlow ? "BUY" : "SELL";
