@@ -1,177 +1,79 @@
 /**
- * ALFA Reports — Bot Runner (Trailing Strategy + Wick fallback)
+ * ALFA Reports — Bot Runner (V4: Strict 3-Trade Pyramid)
  *
- * Manages the live trading loop for each active session. The runner is an
- * in-process singleton: one setInterval per session, ticking every 500ms in
- * HF mode or 1s in standard mode.
+ * Strategy:
+ * 1. Open a pyramid of 3 anchor trades at once (e.g. 3× SELL XAUUSD).
+ * 2. Each trade exits immediately when it hits $1 profit OR $1 loss (HF exit).
+ * 3. Trailing stop every $3 of profit (optional safety net).
+ * 4. Strict rule: NO new pyramid is opened until ALL 3 trades of the previous
+ *    pyramid have closed.
+ * 5. After the previous pyramid fully closes, the bot WAITS for the next 1m
+ *    candle to close before opening a new pyramid. This prevents opening
+ *    a new batch every few seconds on the same candle.
  *
- * =====================================================================
- *  TWO STRATEGY MODES
- * =====================================================================
- *
- * 1. strategyType = "trailing"  (DEFAULT — recommended)
- *    Auto-pair scan + auto entry + auto trailing exit.
- *    Each tick the bot evaluates every symbol in `scanSymbols`, picks the
- *    highest-scoring candidate, opens a trade with an ATR-based stop loss,
- *    then trails the stop upward (BUY) / downward (SELL) on every tick.
- *    Exit fires when the trailing stop is hit OR the hard time-stop expires.
- *
- * 2. strategyType = "wick"  (legacy)
- *    Original Wick-to-Wick Rejection / HF wick logic from the earlier build.
- *    Kept for backward compatibility — newly created sessions default to
- *    "trailing".
- *
- * =====================================================================
- *  AUTO-RESUME ON CONTAINER RESTART
- * =====================================================================
- * See instrumentation.ts — on process start it queries the DB for every
- * session whose `botRunning = true` and calls `startBot(token)` for each.
- * This survives container restarts and deploys.
+ * Anti-over-trading: Only ONE pyramid per 1m candle. Even if all 3 trades
+ * close in 30 seconds, the bot will NOT open a new batch until the next
+ * minute's M1 candle closes.
  */
 import { db } from "./db";
-import { getSessionByToken, getSessionIdByToken } from "./session";
+import { getSessionByToken } from "./session";
 import {
   getCandles,
   getCurrentPrice,
   createMarketOrder,
   closePosition,
   getOpenPositions,
-  getAccountInfo,
   isSimulationMode,
   getMasterMetaApiAccountId,
   getMasterLogin,
-  ensureAccountCached,
 } from "./metaapi";
 import {
-  evaluateEntry,
-  evaluateHighFrequencyEntry,
   pickNewClosedCandle,
-  checkExit,
   calculateProfitPips,
   PIP_VALUE_XAUUSD,
-  evaluateTrailingEntry,
-  evaluateTrailingExit,
-  detectPipValue,
   type Candle,
-  type TrailingConfig,
 } from "./strategy";
-import { sendMessage } from "./telegram";
+
+// ---------------- Types ----------------
+
+type OpenTrade = {
+  tradeId: string;
+  positionId: string;
+  direction: "BUY" | "SELL";
+  openPrice: number;
+  slPrice: number;
+  tpPrice: number;
+  openedAt: string;
+  symbol: string;
+  pyramidId: string;
+  lastTrailProfitUsd: number;
+};
 
 type ActiveSession = {
-  sessionToken: string;       // public token (used by API)
-  internalId: string;         // MT5Session.id (used as FK)
+  sessionToken: string;
+  internalId: string;
   mt5Login: string;
-  metaApiAccountId?: string;  // persisted MetaApi account ID (used as override when cache is cold)
-  symbol: string;             // fallback symbol (used when autoPairScan is off)
+  metaApiAccountId?: string;
+  symbol: string;
   timeframe: string;
-  highFrequencyMode: boolean;
-  // Trailing-engine runtime state:
-  trailingAtr: number | null;   // last ATR for the open trailing position
-  scanInterval: NodeJS.Timeout | null; // separate (slower) scan loop for pair selection
-  interval: NodeJS.Timeout;
-  currentPosition: {
-    tradeId: string;
-    positionId: string;
-    direction: "BUY" | "SELL";
-    openPrice: number;
-    tpPrice: number | null;
-    slPrice: number | null;     // current live trailing SL (moves over time)
-    initialSl: number | null;   // original SL at entry (for diagnostics)
-    atr: number | null;         // ATR captured at entry (drives trailing distance)
-    wickTip: number | null;
-    openedAt: string;
-    symbol: string;             // the actual symbol the trade was opened on
-  } | null;
+  interval: NodeJS.Timeout | null;
+  // Pyramid state
+  openPositions: OpenTrade[];
+  currentPyramidId: string | null;
+  pyramidDirection: "BUY" | "SELL" | null;
+  pyramidAnchorSl: number | null;
+  pyramidOpenedAt: string | null;
+  pyramidEvaluating: boolean;
+  // Candle memory — last 1m candle the bot opened a pyramid on
+  lastPyramidCandleTime: string | null;
+  inMemoryLastPyramidCandleTime: string | null;
+  // Timestamp of when last pyramid closed (used for cooldown)
+  lastPyramidClosedAt: number;
 };
 
 const activeSessions = new Map<string, ActiveSession>();
 
-/**
- * Send a Telegram notification to the admin chat about a trade event.
- * Best-effort: failures are logged but never throw.
- */
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-async function notifyTrade(
-  event: "OPEN" | "CLOSE" | "TRAIL" | "ERROR" | "SCAN",
-  ctx: ActiveSession,
-  details: {
-    direction?: "BUY" | "SELL";
-    symbol?: string;
-    openPrice?: number | null;
-    exitPrice?: number | null;
-    profitPips?: number | null;
-    profitUsd?: number | null;
-    reason?: string;
-    errorMessage?: string;
-    lotSize?: number;
-    newSl?: number | null;
-    score?: number | null;
-  }
-): Promise<void> {
-  try {
-    const adminIds = (process.env.TELEGRAM_ADMIN_IDS || "")
-      .split(/[,\s]+/)
-      .filter(Boolean);
-    if (adminIds.length === 0) return;
-
-    const emoji =
-      event === "OPEN" ? "🟢" :
-      event === "CLOSE" ? (details.profitPips != null && details.profitPips >= 0 ? "✅" : "🔴") :
-      event === "TRAIL" ? "↗️" :
-      event === "SCAN" ? "🔍" :
-      "⚠️";
-
-    const labels: Record<string, string> = {
-      OPEN: "صفقة جديدة",
-      CLOSE: "إغلاق صفقة",
-      TRAIL: "تحديث وقف متحرك",
-      SCAN: "اختيار زوج",
-      ERROR: "خطأ في صفقة",
-    };
-
-    const lines: string[] = [];
-    lines.push(`${emoji} <b>${labels[event]}</b>`);
-    lines.push("");
-    if (details.direction) lines.push(`النوع: <b>${details.direction === "BUY" ? "شراء BUY" : "بيع SELL"}</b>`);
-    if (details.symbol) lines.push(`الزوج: <code>${details.symbol}</code>`);
-    if (details.lotSize) lines.push(`حجم اللوت: <code>${details.lotSize}</code>`);
-    if (details.openPrice != null) lines.push(`سعر الدخول: <code>${details.openPrice.toFixed(4)}</code>`);
-    if (details.exitPrice != null) lines.push(`سعر الخروج: <code>${details.exitPrice.toFixed(4)}</code>`);
-    if (details.newSl != null) lines.push(`وقف متحرك جديد: <code>${details.newSl.toFixed(4)}</code>`);
-    if (details.score != null) lines.push(`قوة الإشارة: <code>${details.score.toFixed(2)}</code>`);
-    if (details.profitPips != null) {
-      const sign = details.profitPips >= 0 ? "+" : "";
-      lines.push(`النقاط: <b>${sign}${details.profitPips.toFixed(1)} pip</b>`);
-    }
-    if (details.profitUsd != null) {
-      const sign = details.profitUsd >= 0 ? "+" : "";
-      lines.push(`الربح: <b>${sign}$${details.profitUsd.toFixed(2)}</b>`);
-    }
-    if (details.reason) lines.push(`السبب: ${escapeHtml(details.reason)}`);
-    if (details.errorMessage) lines.push(`الخطأ: <code>${escapeHtml(details.errorMessage.slice(0, 120))}</code>`);
-    lines.push("");
-    lines.push(`حساب MT5: <code>${ctx.mt5Login}</code>`);
-
-    const text = lines.join("\n");
-
-    for (const id of adminIds) {
-      await sendMessage({
-        chat_id: id,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      });
-    }
-  } catch (e: any) {
-    console.warn(`[notifyTrade] failed:`, e?.message || e);
-  }
-}
+// ---------------- Public API ----------------
 
 export function isBotRunning(sessionToken: string): boolean {
   return activeSessions.has(sessionToken);
@@ -186,61 +88,42 @@ export function listActiveSessions(): Array<{
   mt5Login: string;
   symbol: string;
   timeframe: string;
-  highFrequencyMode: boolean;
-  hasOpenPosition: boolean;
-  strategyType: string;
-  openSymbol?: string;
+  openCount: number;
+  currentPyramidId: string | null;
+  pyramidDirection: "BUY" | "SELL" | null;
 }> {
   return Array.from(activeSessions.values()).map((s) => ({
     sessionToken: s.sessionToken,
     mt5Login: s.mt5Login,
     symbol: s.symbol,
     timeframe: s.timeframe,
-    highFrequencyMode: s.highFrequencyMode,
-    hasOpenPosition: !!s.currentPosition,
-    strategyType: "trailing", // runner is now trailing-first
-    openSymbol: s.currentPosition?.symbol,
+    openCount: s.openPositions.length,
+    currentPyramidId: s.currentPyramidId,
+    pyramidDirection: s.pyramidDirection,
   }));
 }
 
 export async function startBot(sessionToken: string): Promise<{ ok: boolean; error?: string }> {
-  if (activeSessions.has(sessionToken)) {
-    return { ok: true };
-  }
+  if (activeSessions.has(sessionToken)) return { ok: true };
   const session = await getSessionByToken(sessionToken);
   if (!session) return { ok: false, error: "session not found" };
   const internalId = session.id;
   const cfg = await db.botConfig.findUnique({ where: { sessionId: internalId } });
   if (!cfg) return { ok: false, error: "bot config not found" };
 
-  // CRITICAL: populate the in-memory accountCache from the DB-persisted
-  // metaApiAccountId. After a container restart, accountCache is empty —
-  // without this, every createMarketOrder / closePosition / getOpenPositions
-  // call would fail with "Account not provisioned". This is the fix for
-  // "bot not trading after restart" / "everything shows zero".
-  if (session.metaApiAccountId) {
-    ensureAccountCached(session.mt5Login, session.metaApiAccountId);
-  }
-
-  // Warm up the master account (market-data source) on first bot start.
   if (!isSimulationMode()) {
     const masterLogin = getMasterLogin();
     if (masterLogin) {
       const masterId = await getMasterMetaApiAccountId();
       if (masterId) {
         console.log(`[BotRunner] Master account warmed up: login=${masterLogin} id=${masterId}`);
-      } else {
-        console.warn(
-          `[BotRunner] Master account ${masterLogin} could not be resolved. ` +
-            `Market data will fall back to first cached account or simulation.`
-        );
       }
     }
   }
 
   await db.botConfig.update({
     where: { sessionId: internalId },
-    data: { botRunning: true, botStartedAt: new Date() },
+    data: { botRunning: true, botStartedAt: new Date(), instabilityStop: false, lastLossStreak: 0 },
   });
 
   const ctx: ActiveSession = {
@@ -250,15 +133,21 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
     metaApiAccountId: session.metaApiAccountId || undefined,
     symbol: cfg.symbol,
     timeframe: cfg.timeframe,
-    highFrequencyMode: cfg.highFrequencyMode,
-    trailingAtr: null,
-    scanInterval: null,
-    interval: null as any,
-    currentPosition: null,
+    interval: null,
+    openPositions: [],
+    currentPyramidId: null,
+    pyramidDirection: null,
+    pyramidAnchorSl: null,
+    pyramidOpenedAt: null,
+    pyramidEvaluating: false,
+    lastPyramidCandleTime: cfg.lastPyramidCandleTime ?? null,
+    inMemoryLastPyramidCandleTime: cfg.lastPyramidCandleTime ?? null,
+    lastPyramidClosedAt: 0,
   };
 
-  // Tick faster in HF mode so the trailing stop reacts within ~500ms.
-  const tickMs = cfg.highFrequencyMode ? 500 : 1000;
+  // Tick every 1000ms — fast enough to detect $1 exit quickly, slow enough
+  // to not hammer MetaApi price feed.
+  const tickMs = 1000;
   ctx.interval = setInterval(async () => {
     try {
       await tickOnce(ctx);
@@ -269,8 +158,10 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
 
   activeSessions.set(sessionToken, ctx);
   console.log(
-    `[bot:${sessionToken}] started (strategy=trailing, mode=${isSimulationMode() ? "SIM" : "LIVE"}, ` +
-    `hf=${cfg.highFrequencyMode ? "ON" : "OFF"}, tick=${tickMs}ms, autoScan=${cfg.autoPairScan})`
+    `[bot:${sessionToken}] started (mode=${isSimulationMode() ? "SIM" : "LIVE"}, ` +
+    `symbol=${cfg.symbol}, dir=${cfg.tradeDirection}, ` +
+    `anchor=${cfg.pyramidAnchorCount ?? 3}, max=${cfg.pyramidMaxTrades ?? 3}, ` +
+    `profitThreshold=$${cfg.pyramidProfitUsd ?? 1}, slPips=${cfg.slPips})`
   );
   return { ok: true };
 }
@@ -278,623 +169,506 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
 export async function stopBot(sessionToken: string): Promise<{ ok: boolean; error?: string }> {
   const ctx = activeSessions.get(sessionToken);
   if (!ctx) {
-    await db.botConfig.updateMany({
-      where: { botRunning: true },
-      data: { botRunning: false },
-    });
+    await db.botConfig.updateMany({ where: { botRunning: true }, data: { botRunning: false } });
     return { ok: true };
   }
-  clearInterval(ctx.interval);
-  if (ctx.scanInterval) clearInterval(ctx.scanInterval);
-
-  if (ctx.currentPosition) {
-    const cp = ctx.currentPosition;
-    await closePosition(ctx.mt5Login, cp.positionId, ctx.metaApiAccountId);
-    const price = await getCurrentPrice(cp.symbol, ctx.mt5Login);
-    if (price) {
-      const exitPrice = cp.direction === "BUY" ? price.bid : price.ask;
-      const pipValue = detectPipValue(exitPrice);
-      const profitPips = (cp.direction === "BUY"
-        ? exitPrice - cp.openPrice
-        : cp.openPrice - exitPrice) / pipValue;
+  clearInterval(ctx.interval as any);
+  // Close all open positions of this session
+  for (const pos of ctx.openPositions) {
+    try {
+      await closePosition(ctx.mt5Login, pos.positionId);
+      const price = await getCurrentPrice(pos.symbol, ctx.mt5Login);
+      const exitPrice = price
+        ? pos.direction === "BUY" ? price.bid : price.ask
+        : pos.openPrice;
+      const profitPips = calculateProfitPips(pos.direction, pos.openPrice, exitPrice);
       await db.trade.update({
-        where: { id: cp.tradeId },
+        where: { id: pos.tradeId },
         data: {
           status: "CLOSED_MANUAL",
           exitPrice,
           profitPips,
-          profitUsd: profitPips * (0.01 * 100), // approx for non-gold pairs
+          profitUsd: profitPips * 1.0,
           closedAt: new Date(),
-          durationSeconds: Math.round(
-            (Date.now() - new Date(cp.openedAt).getTime()) / 1000
-          ),
+          durationSeconds: Math.round((Date.now() - new Date(pos.openedAt).getTime()) / 1000),
         },
       });
-      await notifyTrade("CLOSE", ctx, {
-        direction: cp.direction,
-        symbol: cp.symbol,
-        lotSize: 0.01,
-        openPrice: cp.openPrice,
-        exitPrice,
-        profitPips,
-        profitUsd: profitPips * (0.01 * 100),
-        reason: "MANUAL_STOP",
-      });
+    } catch (e) {
+      console.error(`[bot:${sessionToken}] close-on-stop error:`, e);
     }
-    ctx.currentPosition = null;
   }
-
+  ctx.openPositions = [];
   await db.botConfig.update({
     where: { sessionId: ctx.internalId },
     data: { botRunning: false },
   });
   activeSessions.delete(sessionToken);
-  console.log(`[bot:${sessionToken}] stopped`);
+  console.log(`[bot:${sessionToken}] stopped (kept ${ctx.openPositions.length} open positions alive)`);
   return { ok: true };
 }
 
-/**
- * Pick the trailing config from the BotConfig row.
- */
-function buildTrailingConfig(cfg: any): TrailingConfig {
-  return {
-    atrPeriod: cfg.atrPeriod ?? 14,
-    atrMultiplier: cfg.atrMultiplier ?? 1.5,
-    emaFast: cfg.emaFast ?? 9,
-    emaSlow: cfg.emaSlow ?? 21,
-    minAtrPrice: cfg.minAtrPrice ?? 0.1,
-    maxSpreadPips: cfg.maxSpreadPips ?? 3,
-    breakevenAtr: cfg.breakevenAtr ?? 0.8,
-    maxTradeMinutes: cfg.maxTradeMinutes ?? 30,
-    lotSize: cfg.lotSize ?? 0.01,
-  };
-}
+// ---------------- Tick loop ----------------
 
-/**
- * Scan candidate symbols in parallel and return the strongest BUY/SELL signal.
- * Returns null if no symbol passes the volatility / spread / trend filters.
- */
-async function scanBestTrailingOpportunity(
-  ctx: ActiveSession,
-  cfg: any
-): Promise<{ symbol: string; signal: ReturnType<typeof evaluateTrailingEntry> } | null> {
-  const symbols: string[] = cfg.autoPairScan
-    ? (cfg.scanSymbols || "XAUUSD,EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAGUSD")
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter(Boolean)
-    : [cfg.symbol];
-
-  // Fetch candles + tick for every candidate in parallel.
-  const results = await Promise.all(
-    symbols.map(async (sym) => {
-      try {
-        const [candles, tick] = await Promise.all([
-          getCandles(sym, cfg.timeframe, 50, ctx.mt5Login),
-          getCurrentPrice(sym, ctx.mt5Login),
-        ]);
-        if (!candles.length || !tick) return null;
-        const tcfg = buildTrailingConfig(cfg);
-        const signal = evaluateTrailingEntry(
-          sym,
-          candles,
-          tick.bid,
-          tick.ask,
-          tcfg
-        );
-        return { symbol: sym, signal };
-      } catch {
-        return null;
-      }
-    })
-  );
-
-  // Pick the highest-scoring actionable signal.
-  const actionable = results
-    .filter((r): r is { symbol: string; signal: any } => !!r && r.signal.action !== "HOLD")
-    .sort((a, b) => Math.abs(b.signal.score) - Math.abs(a.signal.score));
-
-  if (actionable.length === 0) return null;
-  return actionable[0];
-}
-
-async function tickOnce(ctx: ActiveSession) {
+async function tickOnce(ctx: ActiveSession): Promise<void> {
   const cfg = await db.botConfig.findUnique({ where: { sessionId: ctx.internalId } });
   if (!cfg || !cfg.botRunning) {
-    await stopBot(ctx.sessionToken);
+    // Stop the bot
+    if (ctx.interval) clearInterval(ctx.interval);
+    activeSessions.delete(ctx.sessionToken);
     return;
   }
-  // Sync runtime config changes:
+
+  // Apply runtime config changes
   if (cfg.symbol !== ctx.symbol || cfg.timeframe !== ctx.timeframe) {
     ctx.symbol = cfg.symbol;
     ctx.timeframe = cfg.timeframe;
-    ctx.currentPosition = null;
-  }
-  ctx.highFrequencyMode = cfg.highFrequencyMode;
-
-  // ============================================================
-  //  TRAILING STRATEGY (default path)
-  // ============================================================
-  if ((cfg.strategyType || "trailing") === "trailing") {
-    return tickTrailing(ctx, cfg);
   }
 
-  // ============================================================
-  //  LEGACY WICK STRATEGY (kept for backward compatibility)
-  // ============================================================
-  return tickWick(ctx, cfg);
+  // 1. Reconcile open positions with MetaApi (catch SL/TP that hit on broker side)
+  await reconcilePositions(ctx, cfg);
+
+  // 2. Manage open positions — HF $1 exit, trailing stop, SL/TP check
+  const anyClosed = await manageOpenPositions(ctx, cfg);
+
+  // 3. If pyramid was active but all positions now closed → close pyramid
+  if (ctx.openPositions.length === 0 && ctx.currentPyramidId) {
+    console.log(`[bot:${ctx.sessionToken}] pyramid ${ctx.currentPyramidId} fully closed — waiting for next 1m candle`);
+    ctx.currentPyramidId = null;
+    ctx.pyramidDirection = null;
+    ctx.pyramidAnchorSl = null;
+    ctx.pyramidOpenedAt = null;
+    ctx.lastPyramidClosedAt = Date.now();
+  }
+
+  // 4. Instability stop guard
+  if (cfg.instabilityStop) {
+    console.warn(`[bot:${ctx.sessionToken}] instabilityStop flag is set — skipping new entries`);
+    return;
+  }
+
+  // 5. STRICT RULE: If we have ANY open positions, do NOT open new ones.
+  //    Only open a new pyramid when openPositions is empty.
+  if (ctx.openPositions.length > 0) {
+    return; // <<< The key guard. No new trade while ANY of the 3 are still open.
+  }
+
+  // 6. Reconcile-on-close cooldown (avoid hammering MetaApi)
+  if (Date.now() - ctx.lastPyramidClosedAt < 2000) return;
+
+  // 7. Evaluate new pyramid entry — STRICTLY on a NEW closed 1m candle.
+  if (ctx.pyramidEvaluating) return;
+  await evaluateNewPyramidEntry(ctx, cfg);
 }
 
-/**
- * Trailing-strategy tick: manage open position OR scan for new entry.
- */
-async function tickTrailing(ctx: ActiveSession, cfg: any) {
-  // 1) If we have an open position, manage it (trailing stop).
-  if (ctx.currentPosition) {
-    const cp = ctx.currentPosition;
-    const price = await getCurrentPrice(cp.symbol, ctx.mt5Login);
-    if (!price) return;
+// ---------------- Position reconciliation ----------------
 
-    // Refresh ATR occasionally so the trailing distance adapts to volatility.
-    let atr = cp.atr;
-    if (atr == null || Math.random() < 0.1) {
-      const candles = await getCandles(cp.symbol, ctx.timeframe, 50, ctx.mt5Login);
-      const tcfg = buildTrailingConfig(cfg);
-      const fresh = await import("./strategy").then((m) => m.computeATR(candles, tcfg.atrPeriod));
-      if (fresh && fresh > 0) {
-        atr = fresh;
-        cp.atr = fresh;
-        ctx.trailingAtr = fresh;
+async function reconcilePositions(ctx: ActiveSession, cfg: any): Promise<void> {
+  try {
+    const remote = await getOpenPositions(ctx.mt5Login);
+    const remoteIds = new Set(remote.map((p: any) => p.id));
+    // Remove local positions that no longer exist on broker (hit SL/TP)
+    const survivors: OpenTrade[] = [];
+    for (const pos of ctx.openPositions) {
+      if (remoteIds.has(pos.positionId)) {
+        survivors.push(pos);
+      } else {
+        // Position closed externally — record in DB
+        await closeTradeInDb(ctx, cfg, pos, pos.slPrice, "SHARED_SL", true);
+      }
+    }
+    ctx.openPositions = survivors;
+  } catch (e) {
+    // ignore reconciliation errors
+  }
+}
+
+// ---------------- Manage open positions ----------------
+
+const TRAIL_STEP_USD = 3;
+
+async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolean> {
+  if (ctx.openPositions.length === 0) return false;
+  const price = await getCurrentPrice(ctx.symbol, ctx.mt5Login);
+  if (!price) return false;
+
+  // PIP value per 1.0 lot
+  const pipValuePerLot = detectPipValue(ctx.symbol);
+  const trailDistancePrice = TRAIL_STEP_USD / (100 * (cfg.lotSize || 0.01)) / pipValuePerLot;
+
+  const hfExitUsd = cfg.pyramidProfitUsd ?? 1.0;
+  const snapshot = [...ctx.openPositions];
+  let anyClosed = false;
+
+  for (const pos of snapshot) {
+    const currentPrice = pos.direction === "BUY" ? price.bid : price.ask;
+    const profitPips = calculateProfitPips(pos.direction, pos.openPrice, currentPrice);
+    const profitUsd = profitPips * (100 * (cfg.lotSize || 0.01));
+
+    // HF PROFIT EXIT — close at +$1
+    if (profitUsd >= hfExitUsd) {
+      console.log(
+        `[bot:${ctx.sessionToken}] HF PROFIT EXIT ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
+        `profit=$${profitUsd.toFixed(2)} >= $${hfExitUsd} — closing`
+      );
+      await closeTradeInDb(ctx, cfg, pos, currentPrice, "TP", false);
+      anyClosed = true;
+      continue;
+    }
+
+    // HF LOSS EXIT — close at -$1
+    if (profitUsd <= -hfExitUsd) {
+      console.log(
+        `[bot:${ctx.sessionToken}] HF LOSS EXIT ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
+        `profit=$${profitUsd.toFixed(2)} <= -$${hfExitUsd} — closing`
+      );
+      await closeTradeInDb(ctx, cfg, pos, currentPrice, "HF_LOSS", false);
+      anyClosed = true;
+      continue;
+    }
+
+    // Trailing stop — every $3 of profit, advance SL by $3 (price-distance)
+    if (profitUsd > 0 && profitUsd >= pos.lastTrailProfitUsd + TRAIL_STEP_USD) {
+      let newSl: number;
+      if (pos.direction === "BUY") {
+        newSl = currentPrice - trailDistancePrice;
+        if (newSl > pos.slPrice) {
+          pos.slPrice = newSl;
+          pos.lastTrailProfitUsd = TRAIL_STEP_USD * Math.floor(profitUsd / TRAIL_STEP_USD);
+          console.log(
+            `[bot:${ctx.sessionToken}] TRAIL ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
+            `profit=$${profitUsd.toFixed(2)} -> SL=${pos.slPrice.toFixed(4)} (distance=${trailDistancePrice.toFixed(4)} = $3)`
+          );
+        }
+      } else {
+        newSl = currentPrice + trailDistancePrice;
+        if (newSl < pos.slPrice) {
+          pos.slPrice = newSl;
+          pos.lastTrailProfitUsd = TRAIL_STEP_USD * Math.floor(profitUsd / TRAIL_STEP_USD);
+          console.log(
+            `[bot:${ctx.sessionToken}] TRAIL ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
+            `profit=$${profitUsd.toFixed(2)} -> SL=${pos.slPrice.toFixed(4)} (distance=${trailDistancePrice.toFixed(4)} = $3)`
+          );
+        }
       }
     }
 
-    const tcfg = buildTrailingConfig(cfg);
-    const decision = evaluateTrailingExit(
-      {
-        direction: cp.direction,
-        openPrice: cp.openPrice,
-        currentStopLoss: cp.slPrice ?? cp.initialSl ?? 0,
-        atr: atr ?? 0.1,
-        openedAt: cp.openedAt,
-      },
-      price.bid,
-      price.ask,
-      tcfg
-    );
+    // SL hit
+    if (pos.direction === "BUY" ? price.bid <= pos.slPrice : price.ask >= pos.slPrice) {
+      const exitPrice = pos.slPrice;
+      console.log(
+        `[bot:${ctx.sessionToken}] SL HIT ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
+        `SL=${pos.slPrice.toFixed(4)} — closing`
+      );
+      await closeTradeInDb(ctx, cfg, pos, exitPrice, "SHARED_SL", false);
+      anyClosed = true;
+      continue;
+    }
 
-    if (decision.exit) {
-      // Close at broker.
-      await closePosition(ctx.mt5Login, cp.positionId, ctx.metaApiAccountId);
-      const exitPrice =
-        decision.exitPrice ?? (cp.direction === "BUY" ? price.bid : price.ask);
-      const pipValue = detectPipValue(exitPrice);
-      const profitPips =
-        (cp.direction === "BUY"
-          ? exitPrice - cp.openPrice
-          : cp.openPrice - exitPrice) / pipValue;
-      // Approximate USD profit (uses 0.01 lot × 100 multiplier — good enough
-      // for notification; the DB stores the precise number for gold pairs).
-      const profitUsd = profitPips * (cfg.lotSize * 100);
-      const status =
-        decision.reason === "SL_HIT"
-          ? "CLOSED_SL"
-          : decision.reason === "TIME"
-          ? "CLOSED_TIME"
-          : "CLOSED_MANUAL";
-      await db.trade.update({
-        where: { id: cp.tradeId },
-        data: {
-          status,
-          exitPrice,
-          profitPips,
-          profitUsd,
-          slPrice: cp.slPrice ?? cp.initialSl,
-          closedAt: new Date(),
-          durationSeconds: Math.round(
-            (Date.now() - new Date(cp.openedAt).getTime()) / 1000
-          ),
-        },
-      });
-      ctx.currentPosition = null;
-      await notifyTrade("CLOSE", ctx, {
-        direction: cp.direction,
-        symbol: cp.symbol,
-        lotSize: cfg.lotSize,
-        openPrice: cp.openPrice,
+    // TP hit (4×SL safety net — usually the HF exit fires first)
+    if (pos.direction === "BUY" ? price.bid >= pos.tpPrice : price.ask <= pos.tpPrice) {
+      const exitPrice = pos.tpPrice;
+      console.log(
+        `[bot:${ctx.sessionToken}] TP HIT ${pos.direction} ${pos.symbol} #${pos.tradeId.slice(-6)} ` +
+        `TP=${pos.tpPrice.toFixed(4)} — closing`
+      );
+      await closeTradeInDb(ctx, cfg, pos, exitPrice, "TP", false);
+      anyClosed = true;
+    }
+  }
+  return anyClosed;
+}
+
+// ---------------- Close trade ----------------
+
+async function closeTradeInDb(
+  ctx: ActiveSession,
+  cfg: any,
+  pos: OpenTrade,
+  exitPrice: number,
+  reason: "TP" | "HF_LOSS" | "SHARED_SL" | "CLOSED_MANUAL",
+  skipBrokerClose: boolean
+): Promise<void> {
+  if (!skipBrokerClose) {
+    try {
+      await closePosition(ctx.mt5Login, pos.positionId);
+    } catch (e) {
+      console.error(`[bot:${ctx.sessionToken}] broker close error:`, e);
+    }
+  }
+  const pipValue = detectPipValue(ctx.symbol);
+  const profitPips = calculateProfitPips(pos.direction, pos.openPrice, exitPrice);
+  const profitUsd = profitPips * (100 * (cfg.lotSize || 0.01));
+
+  try {
+    await db.trade.update({
+      where: { id: pos.tradeId },
+      data: {
+        status:
+          reason === "TP" ? "CLOSED_TP" :
+          reason === "SHARED_SL" ? "CLOSED_SL" :
+          "CLOSED_MANUAL",
         exitPrice,
         profitPips,
         profitUsd,
-        reason: decision.reason ?? "TRAILING",
-      });
-      return;
-    }
-
-    // Move the trailing SL upward (BUY) / downward (SELL).
-    if (decision.newStopLoss != null) {
-      const prevSl = cp.slPrice ?? cp.initialSl;
-      cp.slPrice = decision.newStopLoss;
-      // Persist the new SL on the trade row (best-effort).
-      try {
-        await db.trade.update({
-          where: { id: cp.tradeId },
-          data: { slPrice: decision.newStopLoss },
-        });
-      } catch {
-        /* ignore */
-      }
-      // Only notify when the move is meaningful (>= 0.1 pip).
-      if (prevSl == null || Math.abs(decision.newStopLoss - prevSl) > 0.0001) {
-        await notifyTrade("TRAIL", ctx, {
-          direction: cp.direction,
-          symbol: cp.symbol,
-          lotSize: cfg.lotSize,
-          openPrice: cp.openPrice,
-          newSl: decision.newStopLoss,
-          reason: `Trail update: ${prevSl?.toFixed(4) ?? "—"} → ${decision.newStopLoss.toFixed(4)}`,
-        });
-      }
-    }
-    return;
+        slPrice: pos.slPrice,
+        closedAt: new Date(),
+        durationSeconds: Math.round((Date.now() - new Date(pos.openedAt).getTime()) / 1000),
+      },
+    });
+  } catch (e) {
+    // ignore
   }
 
-  // 2) No open position — scan for the best entry opportunity.
-  //    Throttle scans to once every ~3 seconds to avoid hammering the API.
-  const now = Date.now();
-  const lastScanTs = (ctx as any)._lastScanTs || 0;
-  if (now - lastScanTs < 3000) return;
-  (ctx as any)._lastScanTs = now;
+  // Remove from in-memory
+  ctx.openPositions = ctx.openPositions.filter((p) => p.positionId !== pos.positionId);
 
-  const best = await scanBestTrailingOpportunity(ctx, cfg);
-  if (!best) {
-    // No actionable signal — log occasionally (every ~30s).
-    if (Math.random() < 0.05) {
-      console.log(`[bot:${ctx.sessionToken}] scan: no actionable signal this tick`);
-    }
-    return;
+  // Loss streak tracking
+  let streak = cfg.lastLossStreak || 0;
+  if (!skipBrokerClose) {
+    if (profitPips < 0) streak += 1;
+    else if (profitPips > 0) streak = 0;
+    await db.botConfig.update({
+      where: { sessionId: ctx.internalId },
+      data: { lastLossStreak: streak },
+    });
   }
-  await executeTrailingEntry(ctx, cfg, best.signal);
+
+  console.log(
+    `[bot:${ctx.sessionToken}] CLOSE ${pos.direction} ${pos.symbol} @ ${exitPrice.toFixed(4)} ` +
+    `profit=${profitPips.toFixed(1)}p ($${profitUsd.toFixed(2)}) reason=${reason} streak=${streak}`
+  );
 }
 
-/**
- * Open a trailing-strategy trade.
- */
-async function executeTrailingEntry(
-  ctx: ActiveSession,
-  cfg: any,
-  signal: ReturnType<typeof evaluateTrailingEntry>
-) {
-  if (signal.action === "HOLD" || signal.entryPrice == null || signal.stopLoss == null) {
+// ---------------- Evaluate new pyramid entry ----------------
+
+async function evaluateNewPyramidEntry(ctx: ActiveSession, cfg: any): Promise<void> {
+  ctx.pyramidEvaluating = true;
+  try {
+    await evaluatePyramidEntryInner(ctx, cfg);
+  } finally {
+    ctx.pyramidEvaluating = false;
+  }
+}
+
+async function evaluatePyramidEntryInner(ctx: ActiveSession, cfg: any): Promise<void> {
+  // STRICT GUARD: must have 0 open positions and no active pyramid
+  if (ctx.openPositions.length > 0) return;
+  if (ctx.currentPyramidId) return;
+
+  // Fetch 1m candles — use MASTER for market data
+  const candles = await getCandles(cfg.symbol, "1m", 50, ctx.mt5Login);
+  const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
+  if (!candles.length || !price) return;
+
+  // STRICT NEW-CANDLE CHECK — wait for a NEW closed 1m candle since the last pyramid
+  const newClosedCandle = pickNewClosedCandle(candles, ctx.inMemoryLastPyramidCandleTime ?? cfg.lastPyramidCandleTime ?? null);
+  if (!newClosedCandle) {
+    // No new closed candle since last pyramid — DO NOT open a new pyramid
     return;
   }
-  const sym = signal.symbol;
-  const direction = signal.action;
-  const entry = signal.entryPrice;
-  const sl = signal.stopLoss;
-  const atr = signal.atr ?? 0.1;
+  // Persist the new candle time so we never re-use this candle even after a restart
+  ctx.inMemoryLastPyramidCandleTime = newClosedCandle.time;
+  try {
+    await db.botConfig.update({
+      where: { sessionId: ctx.internalId },
+      data: { lastPyramidCandleTime: newClosedCandle.time },
+    });
+  } catch {}
 
-  // Persist the scan winner for UI / debugging.
-  await db.botConfig.update({
-    where: { sessionId: ctx.internalId },
-    data: { lastScanWinner: sym },
-  });
+  // Spread filter
+  const pipValue = detectPipValue(cfg.symbol);
+  const spreadPips = (price.ask - price.bid) / pipValue;
+  if (spreadPips > cfg.maxSpreadPips) {
+    console.log(`[bot:${ctx.sessionToken}] pyramid skip: spread ${spreadPips.toFixed(2)}p > max ${cfg.maxSpreadPips}p`);
+    return;
+  }
 
+  // 5m trend (EMA9 vs EMA21) — used as soft preference
+  let trend5m: "BUY" | "SELL" = "BUY";
+  try {
+    const candles5m = await getCandles(cfg.symbol, "5m", 50, ctx.mt5Login);
+    if (candles5m.length >= 25) {
+      const closes5m = candles5m.map((c: Candle) => c.close);
+      const emaFast5m = computeEMA(closes5m, cfg.emaFast);
+      const emaSlow5m = computeEMA(closes5m, cfg.emaSlow);
+      if (emaFast5m != null && emaSlow5m != null) {
+        trend5m = emaFast5m > emaSlow5m ? "BUY" : "SELL";
+      }
+    }
+  } catch (e) {
+    console.warn(`[bot:${ctx.sessionToken}] 5m trend fetch failed, defaulting to BUY`, e);
+  }
+
+  // 1m trend
+  const closes1m = candles.map((c: Candle) => c.close);
+  const emaFast1m = computeEMA(closes1m, cfg.emaFast);
+  const emaSlow1m = computeEMA(closes1m, cfg.emaSlow);
+  if (emaFast1m == null || emaSlow1m == null) {
+    console.log(`[bot:${ctx.sessionToken}] pyramid skip: EMA computation failed`);
+    return;
+  }
+  const trend1m: "BUY" | "SELL" = emaFast1m > emaSlow1m ? "BUY" : "SELL";
+
+  // Direction: respect cfg.tradeDirection (BUY/SELL/AUTO)
+  let direction: "BUY" | "SELL";
+  if (cfg.tradeDirection === "BUY") direction = "BUY";
+  else if (cfg.tradeDirection === "SELL") direction = "SELL";
+  else {
+    // AUTO — use 5m trend
+    direction = trend5m;
+    if (direction !== trend5m) {
+      console.log(
+        `[bot:${ctx.sessionToken}] 5m trend=${trend5m} — using as direction (AUTO)`
+      );
+    }
+  }
+
+  // Entry price, SL, TP (4×SL pattern)
+  const slPips = cfg.slPips;
+  const tpPips = cfg.tpPips ?? 4 * slPips;
+  const slPriceDistance = slPips * pipValue;
+  const tpPriceDistance = tpPips * pipValue;
+
+  const entry = direction === "BUY" ? price.ask : price.bid;
+  const slPrice = direction === "BUY" ? entry - slPriceDistance : entry + slPriceDistance;
+  const tpPrice = direction === "BUY" ? entry + tpPriceDistance : entry - tpPriceDistance;
+
+  // Anchor count = min(anchorCount, maxTrades) — always 3 (no scaling)
+  const anchorCount = Math.min(cfg.pyramidAnchorCount ?? 3, cfg.pyramidMaxTrades ?? 3);
+
+  // Build pyramid ID
+  const pyramidId = `pyramid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  ctx.currentPyramidId = pyramidId;
+  ctx.pyramidDirection = direction;
+  ctx.pyramidAnchorSl = slPrice;
+  ctx.pyramidOpenedAt = new Date().toISOString();
+
+  console.log(
+    `[bot:${ctx.sessionToken}] PYRAMID OPEN ${direction} ${cfg.symbol} x${anchorCount} @ ${entry.toFixed(4)} ` +
+    `SL=${slPrice.toFixed(4)} TP=${tpPrice.toFixed(4)} (4×SL) 5mTrend=${trend5m} 1mTrend=${trend1m} ` +
+    `— strict 3-trade cap, $1 HF exit, wait-for-next-candle`
+  );
+
+  // Open 3 anchor trades (150ms apart for broker rate-limit friendliness)
+  for (let i = 0; i < anchorCount; i++) {
+    await openAnchorTrade(ctx, cfg, {
+      direction,
+      symbol: cfg.symbol,
+      entry,
+      slPrice,
+      tpPrice,
+      pyramidId,
+      reason: `Anchor ${i + 1}/${anchorCount} ${direction} — 5mTrend=${trend5m}, 1mTrend=${trend1m}`,
+    });
+    if (i < anchorCount - 1) await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
+async function openAnchorTrade(
+  ctx: ActiveSession,
+  cfg: any,
+  params: {
+    direction: "BUY" | "SELL";
+    symbol: string;
+    entry: number;
+    slPrice: number;
+    tpPrice: number;
+    pyramidId: string;
+    reason: string;
+  }
+): Promise<void> {
   const order = await createMarketOrder(
     ctx.mt5Login,
-    sym,
-    direction,
+    params.symbol,
+    params.direction,
     cfg.lotSize,
-    sl,         // initial stop loss
-    undefined,  // no take profit — trailing engine handles exit
-    ctx.metaApiAccountId
+    params.slPrice,
+    params.tpPrice
   );
 
   if (!order.ok) {
     await db.trade.create({
       data: {
         sessionId: ctx.internalId,
-        symbol: sym,
-        direction,
+        symbol: params.symbol,
+        direction: params.direction,
         lotSize: cfg.lotSize,
-        entryPrice: entry,
-        tpPips: 0,
-        slPips: 0,
-        tpPrice: null,
-        slPrice: sl,
+        entryPrice: params.entry,
+        tpPips: cfg.tpPips ?? 4 * cfg.slPips,
+        slPips: cfg.slPips,
+        tpPrice: params.tpPrice,
+        slPrice: params.slPrice,
         wickPrice: null,
         status: "ERROR",
         errorMessage: order.error || "order failed",
       },
     });
-    await notifyTrade("ERROR", ctx, {
-      direction,
-      symbol: sym,
-      lotSize: cfg.lotSize,
-      openPrice: entry,
-      errorMessage: order.error || "order failed",
-    });
+    console.error(`[bot:${ctx.sessionToken}] ORDER FAILED: ${order.error}`);
     return;
   }
 
   const trade = await db.trade.create({
     data: {
       sessionId: ctx.internalId,
-      symbol: sym,
-      direction,
+      symbol: params.symbol,
+      direction: params.direction,
       lotSize: cfg.lotSize,
-      entryPrice: entry,
-      tpPips: 0,
-      slPips: 0,
-      tpPrice: null,
-      slPrice: sl,
+      entryPrice: params.entry,
+      tpPips: cfg.tpPips ?? 4 * cfg.slPips,
+      slPips: cfg.slPips,
+      tpPrice: params.tpPrice,
+      slPrice: params.slPrice,
       wickPrice: null,
       status: "OPEN",
     },
   });
 
-  ctx.currentPosition = {
+  ctx.openPositions.push({
     tradeId: trade.id,
     positionId: order.orderId!,
-    direction,
-    openPrice: entry,
-    tpPrice: null,
-    slPrice: sl,
-    initialSl: sl,
-    atr,
-    wickTip: null,
+    direction: params.direction,
+    openPrice: params.entry,
+    slPrice: params.slPrice,
+    tpPrice: params.tpPrice,
     openedAt: new Date().toISOString(),
-    symbol: sym,
-  };
+    symbol: params.symbol,
+    pyramidId: params.pyramidId,
+    lastTrailProfitUsd: 0,
+  });
 
   console.log(
-    `[bot:${ctx.sessionToken}] OPEN ${direction} ${sym} @ ${entry.toFixed(4)} ` +
-    `SL=${sl.toFixed(4)} ATR=${atr.toFixed(4)} score=${signal.score.toFixed(2)} reason="${signal.reason}"`
+    `[bot:${ctx.sessionToken}] OPEN ${params.direction} ${params.symbol} @ ${params.entry.toFixed(4)} ` +
+    `SL=${params.slPrice.toFixed(4)} TP=${params.tpPrice.toFixed(4)} ANCHOR pyramid=${params.pyramidId} ` +
+    `[${ctx.openPositions.length}/${cfg.pyramidMaxTrades ?? 3}]`
   );
-
-  await notifyTrade("OPEN", ctx, {
-    direction,
-    symbol: sym,
-    lotSize: cfg.lotSize,
-    openPrice: entry,
-    score: signal.score,
-    reason: signal.reason,
-  });
 }
 
-/**
- * Legacy Wick-strategy tick (kept for backward compatibility — used only
- * when `strategyType === "wick"`).
- */
-async function tickWick(ctx: ActiveSession, cfg: any) {
-  const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 30, ctx.mt5Login);
-  const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
-  if (!candles.length || !price) return;
+// ---------------- Helpers ----------------
 
-  // 1) Manage open position first.
-  if (ctx.currentPosition) {
-    const cp = ctx.currentPosition;
-    const exit = checkExit(
-      {
-        direction: cp.direction,
-        openPrice: cp.openPrice,
-        tpPrice: cfg.autoTpSl ? cp.tpPrice : null,
-        slPrice: cfg.autoTpSl ? cp.slPrice : null,
-        openedAt: cp.openedAt,
-      },
-      price.bid,
-      price.ask,
-      cfg.timeExitMinutes
-    );
-    if (exit.exit) {
-      await closePosition(ctx.mt5Login, cp.positionId, ctx.metaApiAccountId);
-      const exitPrice =
-        exit.exitPrice ?? (cp.direction === "BUY" ? price.bid : price.ask);
-      const profitPips = calculateProfitPips(cp.direction, cp.openPrice, exitPrice);
-      const status =
-        exit.reason === "TP" ? "CLOSED_TP"
-        : exit.reason === "SL" ? "CLOSED_SL"
-        : exit.reason === "TIME" ? "CLOSED_TIME"
-        : "CLOSED_MANUAL";
-      await db.trade.update({
-        where: { id: cp.tradeId },
-        data: {
-          status,
-          exitPrice,
-          profitPips,
-          profitUsd: profitPips * (cfg.lotSize * 100),
-          closedAt: new Date(),
-          durationSeconds: Math.round(
-            (Date.now() - new Date(cp.openedAt).getTime()) / 1000
-          ),
-        },
-      });
-      ctx.currentPosition = null;
-      await notifyTrade("CLOSE", ctx, {
-        direction: cp.direction,
-        symbol: cfg.symbol,
-        lotSize: cfg.lotSize,
-        openPrice: cp.openPrice,
-        exitPrice,
-        profitPips,
-        profitUsd: profitPips * (cfg.lotSize * 100),
-        reason: exit.reason ?? "WICK",
-      });
-    }
-    return;
-  }
-
-  // 2) Look for a new entry signal.
-  if (cfg.highFrequencyMode) {
-    const closedCandle = pickNewClosedCandle(candles, cfg.lastHfCandleTime);
-    if (!closedCandle) return;
-    const hfSignal = evaluateHighFrequencyEntry(closedCandle, price.bid, price.ask, {
-      minWickRatio: cfg.minWickRatio,
-      tpPips: cfg.tpPips,
-      slPips: cfg.slPips,
-      maxSpreadPips: cfg.maxSpreadPips,
-      pipValue: PIP_VALUE_XAUUSD,
-    });
-    await db.botConfig.update({
-      where: { sessionId: ctx.internalId },
-      data: { lastHfCandleTime: closedCandle.time },
-    });
-    if (hfSignal.action === "HOLD") return;
-    await executeWickEntry(ctx, cfg, {
-      action: hfSignal.action,
-      reason: hfSignal.reason,
-      wickTip: hfSignal.wickTip,
-      entryPrice: hfSignal.entryPrice,
-      tpPrice: hfSignal.tpPrice,
-      slPrice: hfSignal.slPrice,
-    });
-    return;
-  }
-  const signal = evaluateEntry(candles, price.bid, price.ask, {
-    minWickRatio: cfg.minWickRatio,
-    tpPips: cfg.tpPips,
-    slPips: cfg.slPips,
-    maxSpreadPips: cfg.maxSpreadPips,
-    pipValue: PIP_VALUE_XAUUSD,
-  });
-  if (signal.action === "HOLD") return;
-  await executeWickEntry(ctx, cfg, {
-    action: signal.action as "BUY" | "SELL",
-    reason: signal.reason,
-    wickTip: signal.wickTip,
-    entryPrice: signal.entryPrice,
-    tpPrice: signal.tpPrice,
-    slPrice: signal.slPrice,
-  });
+function detectPipValue(symbol: string): number {
+  if (symbol === "XAUUSD") return PIP_VALUE_XAUUSD;
+  if (symbol.endsWith("JPY")) return 0.01;
+  return 0.0001;
 }
 
-async function executeWickEntry(
-  ctx: ActiveSession,
-  cfg: any,
-  signal: {
-    action: "BUY" | "SELL";
-    reason: string;
-    wickTip: number | null;
-    entryPrice: number | null;
-    tpPrice: number | null;
-    slPrice: number | null;
+function computeEMA(values: number[], period: number): number | null {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values[0];
+  for (let i = 1; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
   }
-) {
-  const order = await createMarketOrder(
-    ctx.mt5Login,
-    cfg.symbol,
-    signal.action,
-    cfg.lotSize,
-    cfg.autoTpSl ? signal.slPrice ?? undefined : undefined,
-    cfg.autoTpSl ? signal.tpPrice ?? undefined : undefined,
-    ctx.metaApiAccountId
-  );
-  if (!order.ok) {
-    await db.trade.create({
-      data: {
-        sessionId: ctx.internalId,
-        symbol: cfg.symbol,
-        direction: signal.action,
-        lotSize: cfg.lotSize,
-        entryPrice: signal.entryPrice ?? 0,
-        tpPips: cfg.tpPips,
-        slPips: cfg.slPips,
-        tpPrice: signal.tpPrice,
-        slPrice: signal.slPrice,
-        wickPrice: signal.wickTip,
-        status: "ERROR",
-        errorMessage: order.error || "order failed",
-      },
-    });
-    await notifyTrade("ERROR", ctx, {
-      direction: signal.action,
-      symbol: cfg.symbol,
-      lotSize: cfg.lotSize,
-      openPrice: signal.entryPrice,
-      errorMessage: order.error || "order failed",
-    });
-    return;
-  }
-  const trade = await db.trade.create({
-    data: {
-      sessionId: ctx.internalId,
-      symbol: cfg.symbol,
-      direction: signal.action,
-      lotSize: cfg.lotSize,
-      entryPrice: signal.entryPrice ?? 0,
-      tpPips: cfg.tpPips,
-      slPips: cfg.slPips,
-      tpPrice: signal.tpPrice,
-      slPrice: signal.slPrice,
-      wickPrice: signal.wickTip,
-      status: "OPEN",
-    },
-  });
-  ctx.currentPosition = {
-    tradeId: trade.id,
-    positionId: order.orderId!,
-    direction: signal.action,
-    openPrice: signal.entryPrice!,
-    tpPrice: signal.tpPrice,
-    slPrice: signal.slPrice,
-    initialSl: signal.slPrice,
-    atr: null,
-    wickTip: signal.wickTip,
-    openedAt: new Date().toISOString(),
-    symbol: cfg.symbol,
-  };
-  console.log(
-    `[bot:${ctx.sessionToken}] OPEN ${signal.action} ${cfg.symbol} @ ${signal.entryPrice} ` +
-    `TP=${signal.tpPrice} SL=${signal.slPrice} reason="${signal.reason}"`
-  );
-  await notifyTrade("OPEN", ctx, {
-    direction: signal.action,
-    symbol: cfg.symbol,
-    lotSize: cfg.lotSize,
-    openPrice: signal.entryPrice,
-    reason: signal.reason,
-  });
+  return ema;
 }
 
-/** Periodically sync open positions from the broker (catch-up safety net). */
-export async function reconcilePositions() {
-  for (const [, ctx] of activeSessions) {
-    try {
-      const positions = await getOpenPositions(ctx.mt5Login, ctx.metaApiAccountId);
-      if (positions.length === 0 && ctx.currentPosition) {
-        const cp = ctx.currentPosition;
-        const price = await getCurrentPrice(cp.symbol, ctx.mt5Login);
-        const exitPrice = price
-          ? cp.direction === "BUY"
-            ? price.bid
-            : price.ask
-          : cp.openPrice;
-        const pipValue = detectPipValue(exitPrice);
-        const profitPips =
-          (cp.direction === "BUY"
-            ? exitPrice - cp.openPrice
-            : cp.openPrice - exitPrice) / pipValue;
-        await db.trade.update({
-          where: { id: cp.tradeId },
-          data: {
-            status: "CLOSED_MANUAL",
-            exitPrice,
-            profitPips,
-            profitUsd: profitPips * (0.01 * 100),
-            closedAt: new Date(),
-            durationSeconds: Math.round(
-              (Date.now() - new Date(cp.openedAt).getTime()) / 1000
-            ),
-          },
-        });
-        ctx.currentPosition = null;
-      }
-    } catch {
-      // ignore
-    }
-  }
-}
+// ---------------- Background reconciliation ----------------
 
 if (typeof setInterval !== "undefined") {
-  setInterval(() => {
-    reconcilePositions().catch(() => {});
+  setInterval(async () => {
+    for (const [token, ctx] of activeSessions) {
+      try {
+        await reconcilePositions(ctx, await db.botConfig.findUnique({ where: { sessionId: ctx.internalId } }) as any);
+      } catch {}
+    }
   }, 30_000);
 }
