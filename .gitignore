@@ -28,6 +28,10 @@ next-env.d.ts
 .env.*.local
 .env.production
 .env.development
+.env.bak
+.env.bak-*
+.env.dockerhub
+.env.template
 
 # === Database (local SQLite) ===
 db/*.db
@@ -70,6 +74,11 @@ prompt
 /download/
 /worklog.md
 /dev.pid
+
+# === Local-only scripts (contain VPS password, MT5 login, etc.) ===
+/scripts/
+/vps-files/
+/vps-src/
 
 # === Keep these (do NOT ignore) ===
 !.env.example
