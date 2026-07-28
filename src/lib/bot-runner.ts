@@ -1,19 +1,21 @@
 /**
- * ALFA Reports — Bot Runner (V4: Strict 3-Trade Pyramid)
+ * ALFA Reports — Bot Runner (V5: 1-Trade + Fast Trail)
  *
  * Strategy:
- * 1. Open a pyramid of 3 anchor trades at once (e.g. 3× SELL XAUUSD).
- * 2. Each trade exits immediately when it hits $1 profit OR $1 loss (HF exit).
- * 3. Trailing stop every $3 of profit (optional safety net).
- * 4. Strict rule: NO new pyramid is opened until ALL 3 trades of the previous
- *    pyramid have closed.
- * 5. After the previous pyramid fully closes, the bot WAITS for the next 1m
- *    candle to close before opening a new pyramid. This prevents opening
- *    a new batch every few seconds on the same candle.
+ * 1. Open ONE trade per signal (anchor=1, max=1) — strictly sequential.
+ * 2. Direction = 5m trend (EMA9 vs EMA21). AUTO mode = always follow 5m.
+ * 3. Trade exits immediately at $1 profit OR $1 loss (HF exit).
+ * 4. Fast trailing stop: every $0.50 of profit, advance SL by $0.50.
+ * 5. STRICT RULE: NO new trade until previous trade closes.
+ * 6. After trade closes, bot WAITS for next 1m candle to close before opening
+ *    a new trade. This prevents opening new trades every few seconds on the
+ *    same candle.
  *
- * Anti-over-trading: Only ONE pyramid per 1m candle. Even if all 3 trades
- * close in 30 seconds, the bot will NOT open a new batch until the next
- * minute's M1 candle closes.
+ * User request (Arabic):
+ *   - "الروبوت صفقاته بيع فقط" → bot only sells because 5m trend is SELL.
+ *     When 5m trend flips to BUY, bot will BUY (AUTO mode follows 5m strictly).
+ *   - "اريده يفتح صفقه واحده تنتهي يفتح الي بعدها" → anchor=1, max=1
+ *   - "لازم يكون سوتب متحرك سريع" → TRAIL_STEP_USD = $0.50 (was $3)
  */
 import { db } from "./db";
 import { getSessionByToken } from "./session";
@@ -160,8 +162,9 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
   console.log(
     `[bot:${sessionToken}] started (mode=${isSimulationMode() ? "SIM" : "LIVE"}, ` +
     `symbol=${cfg.symbol}, dir=${cfg.tradeDirection}, ` +
-    `anchor=${cfg.pyramidAnchorCount ?? 3}, max=${cfg.pyramidMaxTrades ?? 3}, ` +
-    `profitThreshold=$${cfg.pyramidProfitUsd ?? 1}, slPips=${cfg.slPips})`
+    `anchor=${cfg.pyramidAnchorCount ?? 1}, max=${cfg.pyramidMaxTrades ?? 1}, ` +
+    `profitThreshold=$${cfg.pyramidProfitUsd ?? 1}, slPips=${cfg.slPips}, ` +
+    `trailStep=$0.50)`
   );
   return { ok: true };
 }
@@ -286,7 +289,8 @@ async function reconcilePositions(ctx: ActiveSession, cfg: any): Promise<void> {
 
 // ---------------- Manage open positions ----------------
 
-const TRAIL_STEP_USD = 3;
+// Fast trailing stop: every $0.50 of profit, advance SL by $0.50
+const TRAIL_STEP_USD = 0.5;
 
 async function manageOpenPositions(ctx: ActiveSession, cfg: any): Promise<boolean> {
   if (ctx.openPositions.length === 0) return false;
@@ -520,13 +524,11 @@ async function evaluatePyramidEntryInner(ctx: ActiveSession, cfg: any): Promise<
   if (cfg.tradeDirection === "BUY") direction = "BUY";
   else if (cfg.tradeDirection === "SELL") direction = "SELL";
   else {
-    // AUTO — use 5m trend
+    // AUTO — STRICTLY follow 5m trend direction (no 1m fallback)
     direction = trend5m;
-    if (direction !== trend5m) {
-      console.log(
-        `[bot:${ctx.sessionToken}] 5m trend=${trend5m} — using as direction (AUTO)`
-      );
-    }
+    console.log(
+      `[bot:${ctx.sessionToken}] AUTO direction = 5m trend = ${trend5m} (EMA${cfg.emaFast} vs EMA${cfg.emaSlow})`
+    );
   }
 
   // Entry price, SL, TP (4×SL pattern)
@@ -539,8 +541,8 @@ async function evaluatePyramidEntryInner(ctx: ActiveSession, cfg: any): Promise<
   const slPrice = direction === "BUY" ? entry - slPriceDistance : entry + slPriceDistance;
   const tpPrice = direction === "BUY" ? entry + tpPriceDistance : entry - tpPriceDistance;
 
-  // Anchor count = min(anchorCount, maxTrades) — always 3 (no scaling)
-  const anchorCount = Math.min(cfg.pyramidAnchorCount ?? 3, cfg.pyramidMaxTrades ?? 3);
+  // Anchor count = min(anchorCount, maxTrades) — default 1 (one trade at a time)
+  const anchorCount = Math.min(cfg.pyramidAnchorCount ?? 1, cfg.pyramidMaxTrades ?? 1);
 
   // Build pyramid ID
   const pyramidId = `pyramid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -552,10 +554,10 @@ async function evaluatePyramidEntryInner(ctx: ActiveSession, cfg: any): Promise<
   console.log(
     `[bot:${ctx.sessionToken}] PYRAMID OPEN ${direction} ${cfg.symbol} x${anchorCount} @ ${entry.toFixed(4)} ` +
     `SL=${slPrice.toFixed(4)} TP=${tpPrice.toFixed(4)} (4×SL) 5mTrend=${trend5m} 1mTrend=${trend1m} ` +
-    `— strict 3-trade cap, $1 HF exit, wait-for-next-candle`
+    `— strict 1-trade cap, $1 HF exit, fast $0.50 trailing, wait-for-next-candle`
   );
 
-  // Open 3 anchor trades (150ms apart for broker rate-limit friendliness)
+  // Open anchor trades (150ms apart for broker rate-limit friendliness)
   for (let i = 0; i < anchorCount; i++) {
     await openAnchorTrade(ctx, cfg, {
       direction,
@@ -564,7 +566,7 @@ async function evaluatePyramidEntryInner(ctx: ActiveSession, cfg: any): Promise<
       slPrice,
       tpPrice,
       pyramidId,
-      reason: `Anchor ${i + 1}/${anchorCount} ${direction} — 5mTrend=${trend5m}, 1mTrend=${trend1m}`,
+      reason: `Trade ${i + 1}/${anchorCount} ${direction} — 5mTrend=${trend5m}, 1mTrend=${trend1m}`,
     });
     if (i < anchorCount - 1) await new Promise((r) => setTimeout(r, 150));
   }
@@ -645,7 +647,7 @@ async function openAnchorTrade(
   console.log(
     `[bot:${ctx.sessionToken}] OPEN ${params.direction} ${params.symbol} @ ${params.entry.toFixed(4)} ` +
     `SL=${params.slPrice.toFixed(4)} TP=${params.tpPrice.toFixed(4)} ANCHOR pyramid=${params.pyramidId} ` +
-    `[${ctx.openPositions.length}/${cfg.pyramidMaxTrades ?? 3}]`
+    `[${ctx.openPositions.length}/${cfg.pyramidMaxTrades ?? 1}]`
   );
 }
 
