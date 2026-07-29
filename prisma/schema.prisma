@@ -152,10 +152,44 @@ model BotConfig {
   // The strategy is auto-selected when symbol != "XAUUSD" — set
   // strategyMode = "single" on bot start. For XAUUSD, the Pyramid strategy
   // remains active (strategyMode = "pyramid").
-  strategyMode      String   @default("pyramid")  // "pyramid" | "single"
+  //
+  // === THREE STRATEGY MODES (user-selectable in UI) ===
+  //   "pyramid"      → original pyramid strategy: 2 anchors → scale to 6
+  //   "multi"        → multi-trade: up to `multiMaxTrades` (default 4) concurrent
+  //                    trades on the same signal; NO scaling. Each trade has
+  //                    independent SL/TP (price-based, pips × pip value).
+  //   "swing-single" → single trade with SL/TP computed from M5
+  //                    support/resistance zones. ONE trade open at a time.
+  //                    Larger SL/TP than pyramid for swing trading.
+  strategyMode      String   @default("pyramid")  // "pyramid" | "single" | "multi" | "swing-single"
   singleSlUsd       Float    @default(3.0)       // SL in USD (loss threshold)
   singleTpUsd       Float    @default(10.0)      // TP in USD (profit threshold)
   lastSingleCandleTime String?  // last M1 candle the single-strategy acted on
+
+  // === MULTI-TRADE STRATEGY (mode = "multi") ===
+  //   - Opens ONE trade per qualifying signal (new closed M1 candle + trend).
+  //   - Keeps opening more trades on subsequent signals until `multiMaxTrades`
+  //     are open. Stops adding new trades while at max.
+  //   - When any trade closes (TP or SL hit), the cap releases and the next
+  //     qualifying signal opens another trade.
+  //   - Each trade has its OWN SL/TP (no shared anchor SL). SL = slPips,
+  //     TP = tpPips (or 3×slPips if autoTpSl).
+  multiMaxTrades    Int      @default(4)       // cap on concurrent open trades
+  lastMultiCandleTime String?  // last M1 candle multi-strategy acted on
+
+  // === SWING-SINGLE STRATEGY (mode = "swing-single") ===
+  //   - Opens ONE trade at a time. Next entry only after current trade closes.
+  //   - SL = (entry - nearest M5 support) for BUY / (nearest M5 resistance - entry) for SELL.
+  //   - TP = (nearest M5 resistance - entry) for BUY / (entry - nearest M5 support) for SELL.
+  //   - Min SL distance enforced via swingMinSlPips (avoids tiny stops in tight ranges).
+  //   - If no clear S/R levels found on M5, skip entry (don't force a trade).
+  swingSrTimeframe  String   @default("M5")    // timeframe for S/R detection
+  swingSrLookback   Int      @default(50)     // number of M5 candles to scan
+  swingMinSlPips    Float    @default(10.0)   // min SL distance (avoids tiny stops)
+  swingMinTpPips    Float    @default(20.0)   // min TP distance (ensures R:R >= 2)
+  swingMinRrRatio   Float    @default(2.0)    // min TP/SL ratio (skip if worse)
+  swingMaxSlPips    Float    @default(80.0)   // max SL distance (avoid wide stops)
+  lastSwingCandleTime String?
 
   // === Trailing Strategy fields (kept for the trailing-stop engine) ===
   strategyType    String   @default("trailing")

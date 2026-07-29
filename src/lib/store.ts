@@ -54,12 +54,30 @@ export type BotConfigState = {
   /** How many trades to open on the initial pyramid signal. */
   pyramidAnchorCount: number;
   // === Single-trade strategy fields (used for non-XAUUSD pairs) ===
-  /** Strategy mode auto-selected: "pyramid" for XAUUSD, "single" otherwise. */
-  strategyMode: "pyramid" | "single";
+  /** Strategy mode: "pyramid" (classic XAUUSD), "single" (USD-based SL/TP),
+   *  "multi" (multiple concurrent independent trades), or "swing-single"
+   *  (single trade with SL/TP from M5 support/resistance zones). */
+  strategyMode: "pyramid" | "single" | "multi" | "swing-single";
   /** SL threshold in USD — bot closes when floating P/L <= -singleSlUsd. */
   singleSlUsd: number;
   /** TP threshold in USD — bot closes when floating P/L >= +singleTpUsd. */
   singleTpUsd: number;
+  // === Multi-trade strategy fields ===
+  /** Max concurrent open trades in multi mode (default 4). */
+  multiMaxTrades?: number;
+  // === Swing-single strategy fields ===
+  /** Higher timeframe for S/R detection (default "M5"). */
+  swingSrTimeframe?: string;
+  /** Number of candles to scan for S/R detection (default 50). */
+  swingSrLookback?: number;
+  /** Min SL distance in pips (avoid tiny stops in tight ranges). */
+  swingMinSlPips?: number;
+  /** Min TP distance in pips (ensures meaningful target). */
+  swingMinTpPips?: number;
+  /** Min R:R ratio (reject trades with worse reward:risk). */
+  swingMinRrRatio?: number;
+  /** Max SL distance in pips (avoid wide stops). */
+  swingMaxSlPips?: number;
   // === Trailing strategy fields (server-side only; UI doesn't expose these) ===
   strategyType: "trailing" | "wick";
   autoPairScan: boolean;

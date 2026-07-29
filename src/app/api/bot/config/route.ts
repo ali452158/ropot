@@ -106,6 +106,15 @@ export async function POST(req: NextRequest) {
       "strategyMode",
       "singleSlUsd",
       "singleTpUsd",
+      // Multi-trade strategy fields:
+      "multiMaxTrades",
+      // Swing-single strategy fields:
+      "swingSrTimeframe",
+      "swingSrLookback",
+      "swingMinSlPips",
+      "swingMinTpPips",
+      "swingMinRrRatio",
+      "swingMaxSlPips",
       // Engine-managed fields (server updates these; user cannot set directly):
       "lastLossStreak",
       "instabilityStop",
@@ -156,6 +165,15 @@ export async function POST(req: NextRequest) {
         strategyMode: patch.strategyMode ?? (patch.symbol?.toUpperCase() === "XAUUSD" ? "pyramid" : "single"),
         singleSlUsd: patch.singleSlUsd ?? 3.0,
         singleTpUsd: patch.singleTpUsd ?? 10.0,
+        // Multi-trade strategy:
+        multiMaxTrades: patch.multiMaxTrades ?? 4,
+        // Swing-single strategy:
+        swingSrTimeframe: patch.swingSrTimeframe ?? "M5",
+        swingSrLookback: patch.swingSrLookback ?? 50,
+        swingMinSlPips: patch.swingMinSlPips ?? 10.0,
+        swingMinTpPips: patch.swingMinTpPips ?? 20.0,
+        swingMinRrRatio: patch.swingMinRrRatio ?? 2.0,
+        swingMaxSlPips: patch.swingMaxSlPips ?? 80.0,
         strategyType: patch.strategyType ?? "trailing",
         autoPairScan: patch.autoPairScan ?? false,
         scanSymbols: patch.scanSymbols ?? "XAUUSD",

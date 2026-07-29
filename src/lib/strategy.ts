@@ -721,3 +721,177 @@ export function evaluateTrailingExit(
     };
   }
 }
+
+/* ===========================================================================
+ *  SUPPORT / RESISTANCE DETECTION (for swing-single strategy)
+ * ===========================================================================
+ *
+ * Simple, robust S/R detection over the last N M5 candles:
+ *   1. Find local highs/lows (swing pivots): a candle is a pivot high if its
+ *      high is greater than the `window` candles on each side.
+ *   2. Cluster pivots within `tolerancePips` of each other into a single
+ *      level (stronger level = more touches).
+ *   3. For BUY: SL = nearest support below entry, TP = nearest resistance
+ *      above entry (validated by R:R ratio).
+ *   4. For SELL: SL = nearest resistance above entry, TP = nearest support
+ *      below entry.
+ *
+ * Returns:
+ *   {
+ *     supports:    number[],   // ascending order
+ *     resistances: number[],   // ascending order
+ *   }
+ * ===========================================================================*/
+export function detectSupportResistance(
+  candles: Candle[],
+  options: {
+    pivotWindow?: number;     // candles on each side (default 3)
+    tolerancePips?: number;   // cluster pivots within this many pips (default 5)
+    pipValue: number;
+    maxLevels?: number;       // keep top N strongest levels per side (default 5)
+  } = { pipValue: 0.0001 }
+): { supports: number[]; resistances: number[] } {
+  const pivotWindow = options.pivotWindow ?? 3;
+  const tolerancePips = options.tolerancePips ?? 5;
+  const pipValue = options.pipValue;
+  const maxLevels = options.maxLevels ?? 5;
+
+  if (candles.length < 2 * pivotWindow + 1) {
+    return { supports: [], resistances: [] };
+  }
+
+  // Find pivot highs and lows.
+  const pivotHighs: { price: number; strength: number }[] = [];
+  const pivotLows: { price: number; strength: number }[] = [];
+
+  for (let i = pivotWindow; i < candles.length - pivotWindow; i++) {
+    let isHigh = true;
+    let isLow = true;
+    for (let j = 1; j <= pivotWindow; j++) {
+      if (candles[i].high <= candles[i - j].high || candles[i].high <= candles[i + j].high) {
+        isHigh = false;
+      }
+      if (candles[i].low >= candles[i - j].low || candles[i].low >= candles[i + j].low) {
+        isLow = false;
+      }
+    }
+    if (isHigh) {
+      pivotHighs.push({ price: candles[i].high, strength: 1 });
+    }
+    if (isLow) {
+      pivotLows.push({ price: candles[i].low, strength: 1 });
+    }
+  }
+
+  // Cluster nearby pivots (within tolerancePips * pipValue price distance).
+  const tolerancePrice = tolerancePips * pipValue;
+  const cluster = (pivots: { price: number; strength: number }[]): { price: number; strength: number }[] => {
+    if (pivots.length === 0) return [];
+    const sorted = [...pivots].sort((a, b) => a.price - b.price);
+    const clusters: { price: number; strength: number; sum: number; count: number }[] = [];
+    for (const p of sorted) {
+      const last = clusters[clusters.length - 1];
+      if (last && Math.abs(p.price - last.price) <= tolerancePrice) {
+        last.sum += p.price;
+        last.count += 1;
+        last.price = last.sum / last.count;
+        last.strength += 1;
+      } else {
+        clusters.push({ price: p.price, strength: 1, sum: p.price, count: 1 });
+      }
+    }
+    // Sort by strength (most touches first), then by recency (we lost recency
+    // info in clustering, so just keep strength).
+    return clusters
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, maxLevels)
+      .map((c) => ({ price: c.price, strength: c.strength }));
+  };
+
+  const clusteredHighs = cluster(pivotHighs);
+  const clusteredLows = cluster(pivotLows);
+
+  // Sort for lookup: highs as resistances (ascending), lows as supports (ascending)
+  const resistances = clusteredHighs.map((p) => p.price).sort((a, b) => a - b);
+  const supports = clusteredLows.map((p) => p.price).sort((a, b) => a - b);
+
+  return { supports, resistances };
+}
+
+/**
+ * Compute SL/TP for a swing-single entry based on M5 S/R levels.
+ *
+ * Returns null if no clear S/R level is found (signal should be skipped).
+ *
+ * For BUY:
+ *   - SL = nearest support BELOW entry (or null if none below)
+ *   - TP = nearest resistance ABOVE entry (or null if none above)
+ *
+ * For SELL:
+ *   - SL = nearest resistance ABOVE entry
+ *   - TP = nearest support BELOW entry
+ *
+ * The function applies min/max distance guards:
+ *   - SL distance must be >= swingMinSlPips × pipValue
+ *   - SL distance must be <= swingMaxSlPips × pipValue (avoid wide stops)
+ *   - TP distance must be >= swingMinTpPips × pipValue
+ *   - TP/SL ratio must be >= swingMinRrRatio
+ */
+export function computeSwingSLTP(
+  entry: number,
+  direction: "BUY" | "SELL",
+  supports: number[],
+  resistances: number[],
+  options: {
+    pipValue: number;
+    swingMinSlPips: number;
+    swingMinTpPips: number;
+    swingMinRrRatio: number;
+    swingMaxSlPips: number;
+  }
+): { slPrice: number; tpPrice: number; slPips: number; tpPips: number; rrRatio: number } | null {
+  const {
+    pipValue,
+    swingMinSlPips,
+    swingMinTpPips,
+    swingMinRrRatio,
+    swingMaxSlPips,
+  } = options;
+
+  let slPrice: number | null = null;
+  let tpPrice: number | null = null;
+
+  if (direction === "BUY") {
+    // SL: nearest support strictly below entry
+    const below = supports.filter((s) => s < entry);
+    if (below.length === 0) return null;
+    slPrice = below[below.length - 1]; // highest below entry (nearest)
+    // TP: nearest resistance strictly above entry
+    const above = resistances.filter((r) => r > entry);
+    if (above.length === 0) return null;
+    tpPrice = above[0]; // lowest above entry (nearest)
+  } else {
+    // SELL: SL = nearest resistance above entry
+    const above = resistances.filter((r) => r > entry);
+    if (above.length === 0) return null;
+    slPrice = above[0]; // lowest above entry (nearest)
+    // TP: nearest support strictly below entry
+    const below = supports.filter((s) => s < entry);
+    if (below.length === 0) return null;
+    tpPrice = below[below.length - 1]; // highest below entry (nearest)
+  }
+
+  const slDist = Math.abs(entry - slPrice);
+  const tpDist = Math.abs(tpPrice - entry);
+  const slPips = slDist / pipValue;
+  const tpPips = tpDist / pipValue;
+
+  // Validate distance guards.
+  if (slPips < swingMinSlPips) return null;
+  if (slPips > swingMaxSlPips) return null;
+  if (tpPips < swingMinTpPips) return null;
+  const rrRatio = tpPips / Math.max(slPips, 0.0001);
+  if (rrRatio < swingMinRrRatio) return null;
+
+  return { slPrice, tpPrice, slPips, tpPips, rrRatio };
+}

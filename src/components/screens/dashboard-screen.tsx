@@ -415,19 +415,12 @@ export function DashboardScreen() {
               </Badge>
             </div>
 
-            {/* Symbol — grouped: Gold/Silver (pyramid) + Forex pairs (single) */}
+            {/* Symbol — all pairs available for all strategies */}
             <div className="space-y-1.5">
               <Label className="text-xs text-cyan-200/70">الزوج</Label>
               <Select
                 value={botConfig.symbol}
-                onValueChange={(v) => {
-                  // Auto-switch strategy: pyramid for XAUUSD/XAGUSD, single otherwise.
-                  const isGold = v === "XAUUSD" || v === "XAGUSD";
-                  updateConfig({
-                    symbol: v,
-                    strategyMode: isGold ? "pyramid" : "single",
-                  });
-                }}
+                onValueChange={(v) => updateConfig({ symbol: v })}
                 disabled={botConfig.botRunning}
               >
                 <SelectTrigger className="bg-black/40 border-cyan-500/30 text-cyan-50 font-mono h-11 text-sm">
@@ -435,7 +428,7 @@ export function DashboardScreen() {
                 </SelectTrigger>
                 <SelectContent className="bg-black/90 border-cyan-500/30 max-h-72">
                   <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-amber-300/70">
-                    🥇 معادن (Pyramid)
+                    🥇 معادن
                   </div>
                   {FOREX_SYMBOLS_GOLD.map((s) => (
                     <SelectItem
@@ -447,7 +440,7 @@ export function DashboardScreen() {
                     </SelectItem>
                   ))}
                   <div className="px-2 py-1 mt-1 text-[10px] uppercase tracking-wide text-cyan-300/70">
-                    💱 أزواج فوركس (Single)
+                    💱 أزواج فوركس
                   </div>
                   {FOREX_SYMBOLS_PAIRS.map((s) => (
                     <SelectItem
@@ -462,13 +455,24 @@ export function DashboardScreen() {
               </Select>
               {/* Strategy badge */}
               <div className="text-[10px] text-cyan-200/50">
-                {botConfig.strategyMode === "pyramid" ? (
+                {botConfig.strategyMode === "pyramid" && (
                   <span className="text-amber-300">
-                    🥞 استراتيجية Pyramid: 2 صفقات → scale حتى 6 (SL=7 pips / TP=21 pips)
+                    🥞 Pyramid: 2 صفقات → scale حتى 6 (SL=7 pips / TP=21 pips)
                   </span>
-                ) : (
+                )}
+                {botConfig.strategyMode === "single" && (
                   <span className="text-cyan-300">
-                    🎯 استراتيجية Single: صفقة واحدة فقط — SL=${botConfig.singleSlUsd} / TP=${botConfig.singleTpUsd}
+                    🎯 Single: صفقة واحدة فقط — SL=${botConfig.singleSlUsd} / TP=${botConfig.singleTpUsd}
+                  </span>
+                )}
+                {botConfig.strategyMode === "multi" && (
+                  <span className="text-violet-300">
+                    ⚡ Multi: حتى {botConfig.multiMaxTrades ?? 4} صفقات متزامنة — كل صفقة لها SL/TP مستقل
+                  </span>
+                )}
+                {botConfig.strategyMode === "swing-single" && (
+                  <span className="text-emerald-300">
+                    🌊 Swing: صفقة واحدة — SL/TP من دعم/مقاومة فريم {botConfig.swingSrTimeframe ?? "M5"}
                   </span>
                 )}
               </div>
@@ -558,31 +562,87 @@ export function DashboardScreen() {
               </Select>
             </div>
 
-            {/* High-Frequency Mode toggle */}
-            <div className="rounded-lg bg-cyan-500/5 border border-cyan-500/20 p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-yellow-400" />
-                  <Label className="text-xs sm:text-sm font-bold text-cyan-100 cursor-pointer">
-                    الوضع عالي التردد
-                  </Label>
-                </div>
-                <Switch
-                  checked={botConfig.highFrequencyMode}
-                  onCheckedChange={(v) => updateConfig({ highFrequencyMode: v })}
-                  disabled={botConfig.botRunning}
-                />
-              </div>
-              <p className="text-[10px] sm:text-[11px] text-cyan-200/60 leading-relaxed">
-                يفتح <b className="text-cyan-200">{botConfig.pyramidAnchorCount} صفقات أولية</b> عند
-                اكتمال شمعة بشروط الدخول، مع ستوب وهدف (الهدف = 3× الاستوب). كلما ربحت أي صفقة
-                <b className="text-cyan-200"> ${botConfig.pyramidProfitUsd}</b> يفتح صفقة إضافية بنفس
-                الاتجاه لحد {botConfig.pyramidMaxTrades} صفقات. لو عكس السعر وضرب استوب أول صفقتين
-                يغلق كل الصفقات تلقائياً.
-              </p>
+            {/* Strategy selector (new — replaces dead highFrequencyMode toggle) */}
+            <div className="space-y-1.5">
+              <Label className="text-xs text-cyan-200/70">نمط الاستراتيجية</Label>
+              <Select
+                value={botConfig.strategyMode}
+                onValueChange={(v) =>
+                  updateConfig({
+                    strategyMode: v as
+                      | "pyramid"
+                      | "single"
+                      | "multi"
+                      | "swing-single",
+                  })
+                }
+                disabled={botConfig.botRunning}
+              >
+                <SelectTrigger className="bg-black/40 border-cyan-500/30 text-cyan-50 font-mono h-11 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-black/90 border-cyan-500/30">
+                  <SelectItem
+                    value="pyramid"
+                    className="text-amber-100 focus:bg-amber-500/20 focus:text-amber-50"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">🥞</span>
+                      <div>
+                        <div className="font-bold">Pyramid</div>
+                        <div className="text-[10px] text-amber-300/60">
+                          صفقات + تكبير حتى {botConfig.pyramidMaxTrades}
+                        </div>
+                      </div>
+                    </div>
+                  </SelectItem>
+                  <SelectItem
+                    value="multi"
+                    className="text-violet-100 focus:bg-violet-500/20 focus:text-violet-50"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">⚡</span>
+                      <div>
+                        <div className="font-bold">Multi (4 صفقات)</div>
+                        <div className="text-[10px] text-violet-300/60">
+                          {botConfig.multiMaxTrades ?? 4} صفقات متزامنة، بدون تكبير
+                        </div>
+                      </div>
+                    </div>
+                  </SelectItem>
+                  <SelectItem
+                    value="single"
+                    className="text-cyan-100 focus:bg-cyan-500/20 focus:text-cyan-50"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">🎯</span>
+                      <div>
+                        <div className="font-bold">Single (USD)</div>
+                        <div className="text-[10px] text-cyan-300/60">
+                          صفقة واحدة، SL/TP بالدولار
+                        </div>
+                      </div>
+                    </div>
+                  </SelectItem>
+                  <SelectItem
+                    value="swing-single"
+                    className="text-emerald-100 focus:bg-emerald-500/20 focus:text-emerald-50"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">🌊</span>
+                      <div>
+                        <div className="font-bold">Swing (دعم/مقاومة)</div>
+                        <div className="text-[10px] text-emerald-300/60">
+                          صفقة واحدة، SL/TP من M5 S/R
+                        </div>
+                      </div>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
-            {/* === Conditional settings: Pyramid (gold) vs Single (other pairs) === */}
+            {/* === Conditional settings per strategy === */}
             {botConfig.strategyMode === "pyramid" ? (
               <>
                 {/* Pyramid parameters */}
@@ -705,6 +765,154 @@ export function DashboardScreen() {
                   بالدولار: إذا وصل ربح الصفقة إلى <b className="text-green-300">+${botConfig.singleTpUsd}</b> تُغلق
                   كربح، وإذا وصل خسارة إلى <b className="text-red-300">-${botConfig.singleSlUsd}</b> تُغلق
                   كخسارة. يعمل مع أي زوج وأي حجم لوت لأن الإغلاق يعتمد على floating P/L الفعلي من الوسيط.
+                </p>
+              </>
+            )}
+
+            {botConfig.strategyMode === "multi" && (
+              <>
+                {/* Multi-trade parameters */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg bg-black/30 border border-violet-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">عدد الصفقات الأقصى</div>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={10}
+                      step={1}
+                      value={botConfig.multiMaxTrades ?? 4}
+                      onChange={(e) =>
+                        setBotConfig({
+                          multiMaxTrades: Math.max(1, Math.min(10, Number(e.target.value) || 1)) as any,
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ multiMaxTrades: Number(e.target.value) || 4 } as any)
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-violet-500/20 text-violet-100 text-sm font-mono"
+                    />
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-violet-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">SL (pips)</div>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={200}
+                      step={1}
+                      value={botConfig.slPips}
+                      onChange={(e) =>
+                        setBotConfig({
+                          slPips: Math.max(1, Math.min(200, Number(e.target.value) || 1)) as any,
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ slPips: Number(e.target.value) || 7 } as any)
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-violet-500/20 text-violet-100 text-sm font-mono"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-violet-200/40 leading-relaxed -mt-1">
+                  ⚡ <b className="text-violet-200">Multi:</b> يفتح صفقة واحدة عند كل إشارة شمعة جديدة
+                  (EMA9/EMA21). كل صفقة لها SL/TP مستقل (TP = 3×SL). يفتح حتى {botConfig.multiMaxTrades ?? 4} صفقات
+                  متزامنة. عند إغلاق أي صفقة (TP/SL)، الإشارة القادمة تفتح صفقة جديدة. لا يوجد تكبير — كل
+                  صفقة مستقلة.
+                </p>
+              </>
+            )}
+
+            {botConfig.strategyMode === "swing-single" && (
+              <>
+                {/* Swing-single strategy parameters */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg bg-black/30 border border-emerald-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">فريم S/R</div>
+                    <Select
+                      value={botConfig.swingSrTimeframe ?? "M5"}
+                      onValueChange={(v) =>
+                        updateConfig({ swingSrTimeframe: v } as any)
+                      }
+                      disabled={botConfig.botRunning}
+                    >
+                      <SelectTrigger className="h-8 bg-black/40 border-emerald-500/20 text-emerald-100 text-sm font-mono">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-black/90 border-emerald-500/30">
+                        <SelectItem value="M5" className="text-emerald-100">M5 — 5 دقائق</SelectItem>
+                        <SelectItem value="M15" className="text-emerald-100">M15 — ربع ساعة</SelectItem>
+                        <SelectItem value="M30" className="text-emerald-100">M30 — نصف ساعة</SelectItem>
+                        <SelectItem value="H1" className="text-emerald-100">H1 — ساعة</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-emerald-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">R:R الأدنى</div>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={10}
+                      step={0.5}
+                      value={botConfig.swingMinRrRatio ?? 2.0}
+                      onChange={(e) =>
+                        setBotConfig({
+                          swingMinRrRatio: Math.max(1, Math.min(10, Number(e.target.value) || 1)) as any,
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ swingMinRrRatio: Number(e.target.value) || 2 } as any)
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-emerald-500/20 text-emerald-100 text-sm font-mono"
+                    />
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-emerald-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">SL الأدنى (pips)</div>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={200}
+                      step={1}
+                      value={botConfig.swingMinSlPips ?? 10}
+                      onChange={(e) =>
+                        setBotConfig({
+                          swingMinSlPips: Math.max(1, Math.min(200, Number(e.target.value) || 1)) as any,
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ swingMinSlPips: Number(e.target.value) || 10 } as any)
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-emerald-500/20 text-emerald-100 text-sm font-mono"
+                    />
+                  </div>
+                  <div className="rounded-lg bg-black/30 border border-emerald-500/15 p-2">
+                    <div className="text-[10px] text-cyan-200/60 mb-1">TP الأدنى (pips)</div>
+                    <Input
+                      type="number"
+                      min={5}
+                      max={500}
+                      step={5}
+                      value={botConfig.swingMinTpPips ?? 20}
+                      onChange={(e) =>
+                        setBotConfig({
+                          swingMinTpPips: Math.max(5, Math.min(500, Number(e.target.value) || 5)) as any,
+                        })
+                      }
+                      onBlur={(e) =>
+                        updateConfig({ swingMinTpPips: Number(e.target.value) || 20 } as any)
+                      }
+                      disabled={botConfig.botRunning}
+                      className="h-8 bg-black/40 border-emerald-500/20 text-emerald-100 text-sm font-mono"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-emerald-200/40 leading-relaxed -mt-1">
+                  🌊 <b className="text-emerald-200">Swing:</b> يفتح صفقة واحدة فقط. الستوب = أقرب دعم
+                  (للشراء) أو أقرب مقاومة (للبيع). الهدف = أقرب مقاومة (للشراء) أو أقرب دعم (للبيع).
+                  يكتشف الدعوم/المقاومات من فريم {botConfig.swingSrTimeframe ?? "M5"}. يرفض الإشارة إذا
+                  كانت نسبة R:R أقل من {botConfig.swingMinRrRatio ?? 2} أو المسافات أصغر من المسموح.
                 </p>
               </>
             )}

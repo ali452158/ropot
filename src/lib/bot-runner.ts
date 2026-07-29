@@ -45,6 +45,7 @@
  */
 import { db } from "./db";
 import { getSessionByToken } from "./session";
+import { sendMessage } from "./telegram";
 import {
   getCandles,
   getCurrentPrice,
@@ -59,6 +60,8 @@ import {
   detectPipValue,
   pickNewClosedCandle,
   detectWick,
+  detectSupportResistance,
+  computeSwingSLTP,
   type Candle,
 } from "./strategy";
 
@@ -102,10 +105,13 @@ type ActiveSession = {
   timeframe: string;
   interval: NodeJS.Timeout;
   openPositions: OpenTrade[];
-  // === Strategy mode (auto-selected on start) ===
-  // "pyramid"  → multi-trade pyramid strategy (XAUUSD only)
-  // "single"   → single-trade USD-based SL/TP (all non-XAUUSD pairs)
-  strategyMode: "pyramid" | "single";
+  // === Strategy mode (user-selectable in UI) ===
+  // "pyramid"     → multi-trade pyramid: 2 anchors → scale to 6 (XAUUSD classic)
+  // "single"      → single-trade USD-based SL/TP (legacy non-XAUUSD)
+  // "multi"       → multi-trade: up to `multiMaxTrades` (default 4) concurrent
+  //                 independent trades; no scaling, each trade has own SL/TP.
+  // "swing-single" → single trade with SL/TP from M5 support/resistance zones.
+  strategyMode: "pyramid" | "single" | "multi" | "swing-single";
   // === Pyramid tracking ===
   currentPyramidId: string | null;       // null = no active pyramid (ready for next)
   pyramidDirection: "BUY" | "SELL" | null;
@@ -120,6 +126,12 @@ type ActiveSession = {
   // === Single-trade strategy tracking ===
   inMemoryLastSingleCandleTime: string | null;
   singleEvaluating: boolean;
+  // === Multi-trade strategy tracking ===
+  inMemoryLastMultiCandleTime: string | null;
+  multiEvaluating: boolean;
+  // === Swing-single strategy tracking ===
+  inMemoryLastSwingCandleTime: string | null;
+  swingEvaluating: boolean;
 };
 
 const activeSessions = new Map<string, ActiveSession>();
@@ -272,8 +284,11 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
   }
 
   // Reset on fresh manual start.
-  // Auto-select strategy based on symbol: XAUUSD = pyramid, everything else = single.
-  const strategyMode: "pyramid" | "single" = cfg.symbol.toUpperCase() === "XAUUSD" ? "pyramid" : "single";
+  // Use the user-selected strategyMode from the config (default: "pyramid" for XAUUSD,
+  // "single" for non-XAUUSD, but user can override via UI dropdown).
+  const strategyMode: "pyramid" | "single" | "multi" | "swing-single" =
+    (cfg.strategyMode as any) ??
+    (cfg.symbol.toUpperCase() === "XAUUSD" ? "pyramid" : "single");
   await db.botConfig.update({
     where: { sessionId: internalId },
     data: {
@@ -283,6 +298,8 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
       lastLossStreak: 0,
       lastPyramidCandleTime: null,
       lastSingleCandleTime: null,
+      lastMultiCandleTime: null,
+      lastSwingCandleTime: null,
       strategyMode,
     },
   });
@@ -307,6 +324,10 @@ export async function startBot(sessionToken: string): Promise<{ ok: boolean; err
     inMemoryLastPyramidCandleTime: cfg.lastPyramidCandleTime ?? null,
     inMemoryLastSingleCandleTime: cfg.lastSingleCandleTime ?? null,
     singleEvaluating: false,
+    inMemoryLastMultiCandleTime: cfg.lastMultiCandleTime ?? null,
+    multiEvaluating: false,
+    inMemoryLastSwingCandleTime: cfg.lastSwingCandleTime ?? null,
+    swingEvaluating: false,
   };
 
   const tickMs = 1000;
@@ -360,11 +381,16 @@ async function tickOnce(ctx: ActiveSession) {
     return;
   }
 
-  if (cfg.symbol !== ctx.symbol || cfg.timeframe !== ctx.timeframe) {
+  if (cfg.symbol !== ctx.symbol || cfg.timeframe !== ctx.timeframe || cfg.strategyMode !== ctx.strategyMode) {
     ctx.symbol = cfg.symbol;
     ctx.timeframe = cfg.timeframe;
-    // Re-select strategy on symbol change
-    ctx.strategyMode = cfg.symbol.toUpperCase() === "XAUUSD" ? "pyramid" : "single";
+    ctx.strategyMode = cfg.strategyMode as any;
+    // Reset candle-time markers on strategy/symbol change so the new strategy
+    // can immediately evaluate the latest closed candle.
+    ctx.inMemoryLastPyramidCandleTime = null;
+    ctx.inMemoryLastSingleCandleTime = null;
+    ctx.inMemoryLastMultiCandleTime = null;
+    ctx.inMemoryLastSwingCandleTime = null;
   }
   ctx.pyramidAnchorCount = cfg.pyramidAnchorCount ?? 2;
   ctx.pyramidMaxTrades = cfg.pyramidMaxTrades ?? 6;
@@ -395,21 +421,31 @@ async function tickOnce(ctx: ActiveSession) {
   }
 
   // 5) BRANCH on strategy mode:
-  //    - "pyramid": multi-trade strategy (XAUUSD) — open + scale + shared SL
-  //    - "single" : single-trade strategy (all non-XAUUSD) — ONE trade at a time
-  //                  with USD-based TP ($10) / SL ($3) managed in manageOpenPositions.
+  //    - "pyramid"      : multi-trade pyramid (XAUUSD classic) — 2 anchors → scale to 6, shared SL
+  //    - "single"       : single-trade USD-based SL/TP — ONE trade at a time, exit by USD P/L
+  //    - "multi"        : multi-trade INDEPENDENT — up to multiMaxTrades (4) concurrent, no scaling
+  //    - "swing-single" : single trade with SL/TP from M5 support/resistance zones
   if (ctx.strategyMode === "single") {
-    // Single-trade: no entry while a trade is open. Wait for it to close
-    // (TP or SL in USD) before evaluating a new signal.
-    if (ctx.openPositions.length > 0) {
-      return;
-    }
-    // Clear any stale state — single strategy has no pyramid state.
+    if (ctx.openPositions.length > 0) return;
     await evaluateSingleEntry(ctx, cfg);
     return;
   }
+  if (ctx.strategyMode === "multi") {
+    // Multi-trade: keep opening new trades on each qualifying signal until
+    // multiMaxTrades cap is reached. Do NOT scale — each trade stands alone.
+    const maxTrades = cfg.multiMaxTrades ?? 4;
+    if (ctx.openPositions.length >= maxTrades) return;
+    await evaluateMultiEntry(ctx, cfg);
+    return;
+  }
+  if (ctx.strategyMode === "swing-single") {
+    // Swing-single: ONE trade at a time. SL/TP computed from M5 S/R zones.
+    if (ctx.openPositions.length > 0) return;
+    await evaluateSwingSingleEntry(ctx, cfg);
+    return;
+  }
 
-  // === PYRAMID MODE (XAUUSD) ===
+  // === PYRAMID MODE (default — XAUUSD classic) ===
   // 5) PYRAMID ENTRY: only when no pyramid is active (all trades closed).
   if (ctx.openPositions.length > 0) {
     // Pyramid is active — check for scaling opportunity instead.
@@ -527,10 +563,10 @@ async function manageOpenPositions(
     }
   }
 
-  // === 2) Check each trade's individual TP ===
-  //     In pyramid mode → use the trade's own TP price.
-  //     In single  mode → use USD-based TP/SL via the broker's floating
-  //                       P/L (more accurate across different pip values).
+  // === 2) Check each trade's individual TP/SL ===
+  //     - pyramid/single-as-default → use the trade's own TP price (price-based)
+  //     - single (USD-based)        → use broker's floating USD P/L
+  //     - multi / swing-single      → use the trade's own TP/SL price (price-based)
   const snapshot = [...ctx.openPositions];
   for (const op of snapshot) {
     if (ctx.strategyMode === "single") {
@@ -555,14 +591,40 @@ async function manageOpenPositions(
         await closeTradeRow(ctx, cfg, op, "SL", exitPrice, floatingUsd);
       }
     } else {
-      // Pyramid mode: trade's own TP price (price-based)
+      // Pyramid, multi, swing-single: price-based TP (and SL for multi/swing)
       const tpHit =
         op.direction === "BUY"
           ? price.bid >= op.tpPrice
           : price.ask <= op.tpPrice;
       if (tpHit) {
         const exitPrice = op.tpPrice;
+        const reason = ctx.strategyMode === "multi" ? "TP_MULTI"
+          : ctx.strategyMode === "swing-single" ? "TP_SWING"
+          : "TP";
+        console.log(
+          `[bot:${ctx.sessionToken}] ${reason} HIT — ${op.direction} ${ctx.symbol} ` +
+          `@ ${op.openPrice.toFixed(4)} → ${exitPrice.toFixed(4)}`
+        );
         await closeTradeRow(ctx, cfg, op, "TP", exitPrice);
+        continue;
+      }
+      // Multi and swing-single: also check the trade's own SL price.
+      // (Pyramid doesn't — its SL is the SHARED anchor SL, checked above.)
+      if (ctx.strategyMode === "multi" || ctx.strategyMode === "swing-single") {
+        const slHit =
+          op.direction === "BUY"
+            ? price.bid <= op.slPrice
+            : price.ask >= op.slPrice;
+        if (slHit) {
+          const exitPrice = op.slPrice;
+          const reason = ctx.strategyMode === "multi" ? "SL_MULTI"
+            : "SL_SWING";
+          console.log(
+            `[bot:${ctx.sessionToken}] ${reason} HIT — ${op.direction} ${ctx.symbol} ` +
+            `@ ${op.openPrice.toFixed(4)} → ${exitPrice.toFixed(4)}`
+          );
+          await closeTradeRow(ctx, cfg, op, "SL", exitPrice);
+        }
       }
     }
   }
@@ -826,6 +888,285 @@ async function evaluateSingleEntryInner(ctx: ActiveSession, cfg: any) {
     isAnchor: true,
     pyramidId,
     reason: `Single ${direction} — trend=${trendDir}, SL=-$${slUsd} TP=+$${tpUsd}`,
+  });
+}
+
+// =========================================================================
+//  MULTI-TRADE STRATEGY (up to multiMaxTrades concurrent independent trades)
+// =========================================================================
+//
+// Strategy:
+//   - On every newly-closed candle, compute EMA9 vs EMA21 trend.
+//   - If user picked BUY/SELL, force that direction. AUTO → follow EMA trend.
+//   - Open ONE trade with broker-side SL = slPips × pipValue and
+//     TP = 3 × SL (or tpPips if autoTpSl is false).
+//   - Each trade has its OWN SL/TP — no shared anchor SL, no scaling.
+//   - Stops opening new trades when `multiMaxTrades` (default 4) are open.
+//   - When a trade closes (TP or SL hit), the next qualifying signal opens a
+//     new trade — so up to 4 are concurrent at any time.
+
+async function evaluateMultiEntry(ctx: ActiveSession, cfg: any) {
+  if (ctx.multiEvaluating) return;
+  ctx.multiEvaluating = true;
+  try {
+    await evaluateMultiEntryInner(ctx, cfg);
+  } finally {
+    ctx.multiEvaluating = false;
+  }
+}
+
+async function evaluateMultiEntryInner(ctx: ActiveSession, cfg: any) {
+  const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 50, ctx.mt5Login);
+  const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
+  if (!candles.length || !price) return;
+
+  const lastMultiTime =
+    ctx.inMemoryLastMultiCandleTime ?? cfg.lastMultiCandleTime ?? null;
+  const closedCandle = pickNewClosedCandle(candles, lastMultiTime);
+  if (!closedCandle) return;
+
+  ctx.inMemoryLastMultiCandleTime = closedCandle.time;
+  try {
+    await db.botConfig.update({
+      where: { sessionId: ctx.internalId },
+      data: { lastMultiCandleTime: closedCandle.time },
+    });
+  } catch {
+    /* ignore */
+  }
+
+  // Per-symbol spread floor (same logic as single strategy).
+  const sym = cfg.symbol.toUpperCase();
+  const isJpyCross = sym.includes("JPY");
+  const isExotic = sym === "EURAUD" || sym === "AUDJPY" || sym === "GBPJPY" || sym === "EURJPY";
+  const spreadFloor = isExotic ? 10.0 : isJpyCross ? 6.0 : 3.0;
+  const effectiveMaxSpread = Math.max(cfg.maxSpreadPips ?? 3.0, spreadFloor);
+
+  const pipValue = detectPipValue(price.ask);
+  const spreadPips = (price.ask - price.bid) / pipValue;
+  if (spreadPips > effectiveMaxSpread) {
+    console.log(
+      `[bot:${ctx.sessionToken}] multi skip: spread ${spreadPips.toFixed(2)}p > max ${effectiveMaxSpread.toFixed(1)}p — ${cfg.symbol}`
+    );
+    return;
+  }
+
+  // Cap check: stop adding trades if we're at max.
+  const maxTrades = cfg.multiMaxTrades ?? 4;
+  if (ctx.openPositions.length >= maxTrades) {
+    return;
+  }
+
+  // Trend detection on the configured timeframe.
+  const closes = candles.map((c) => c.close);
+  const emaFast = computeEMA(closes, cfg.emaFast);
+  const emaSlow = computeEMA(closes, cfg.emaSlow);
+  if (emaFast == null || emaSlow == null) return;
+  const trendDir: "BUY" | "SELL" = emaFast > emaSlow ? "BUY" : "SELL";
+
+  // Direction selection.
+  let direction: "BUY" | "SELL";
+  if (cfg.tradeDirection === "BUY") direction = "BUY";
+  else if (cfg.tradeDirection === "SELL") direction = "SELL";
+  else direction = trendDir;
+
+  // SL/TP price computation.
+  const slDist = cfg.slPips * pipValue;
+  const tpDist = cfg.autoTpSl ? 3 * slDist : cfg.tpPips * pipValue;
+  const entry = direction === "BUY" ? price.ask : price.bid;
+  const slPrice = direction === "BUY" ? entry - slDist : entry + slDist;
+  const tpPrice = direction === "BUY" ? entry + tpDist : entry - tpDist;
+
+  // No shared pyramid state in multi mode — but mark a unique pyramidId
+  // so the engine considers it "active" while the trade is open.
+  const tradeId = `multi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  ctx.currentPyramidId = tradeId;
+  ctx.pyramidDirection = direction;
+  ctx.pyramidAnchorSl = null; // no shared SL in multi mode
+  ctx.pyramidOpenedAt = new Date().toISOString();
+
+  console.log(
+    `[bot:${ctx.sessionToken}] MULTI OPEN ${direction} ${cfg.symbol} @ ${entry.toFixed(4)} ` +
+    `SL=${slPrice.toFixed(4)} TP=${tpPrice.toFixed(4)} (${ctx.openPositions.length + 1}/${maxTrades}) trend=${trendDir}`
+  );
+
+  await notifyTrade("OPEN", ctx, {
+    direction,
+    symbol: cfg.symbol,
+    lotSize: cfg.lotSize,
+    openPrice: entry,
+    reason: `Multi ${direction} (${ctx.openPositions.length + 1}/${maxTrades}) — trend=${trendDir}, SL=${cfg.slPips}p TP=${(cfg.autoTpSl ? 3 * cfg.slPips : cfg.tpPips)}p`,
+  });
+
+  await executeEntry(ctx, cfg, {
+    direction,
+    symbol: cfg.symbol,
+    entry,
+    slPrice,
+    tpPrice,
+    isAnchor: true,
+    pyramidId: tradeId,
+    reason: `Multi ${direction} — trend=${trendDir}, SL=${cfg.slPips}p TP=${(cfg.autoTpSl ? 3 * cfg.slPips : cfg.tpPips)}p`,
+  });
+}
+
+// =========================================================================
+//  SWING-SINGLE STRATEGY (1 trade at a time with SL/TP from M5 S/R zones)
+// =========================================================================
+//
+// Strategy:
+//   - On every newly-closed candle (default M1), pull the higher-timeframe
+//     (default M5) candles and detect support/resistance zones via pivot
+//     clustering.
+//   - Compute EMA9 vs EMA21 trend on the trading timeframe.
+//   - Direction: BUY if EMA9 > EMA21 AND entry is closer to nearest support
+//     (i.e. we're buying near support). SELL if EMA9 < EMA21 AND entry is
+//     closer to nearest resistance.
+//   - SL = nearest support (BUY) / nearest resistance (SELL).
+//   - TP = nearest resistance (BUY) / nearest support (SELL).
+//   - Reject the signal if:
+//       * no S/R levels found on the higher timeframe
+//       * SL distance < swingMinSlPips (too tight)
+//       * SL distance > swingMaxSlPips (too wide)
+//       * TP distance < swingMinTpPips
+//       * R:R ratio < swingMinRrRatio
+//   - One trade at a time — wait for it to close before opening another.
+
+async function evaluateSwingSingleEntry(ctx: ActiveSession, cfg: any) {
+  if (ctx.swingEvaluating) return;
+  ctx.swingEvaluating = true;
+  try {
+    await evaluateSwingSingleEntryInner(ctx, cfg);
+  } finally {
+    ctx.swingEvaluating = false;
+  }
+}
+
+async function evaluateSwingSingleEntryInner(ctx: ActiveSession, cfg: any) {
+  const candles: Candle[] = await getCandles(cfg.symbol, cfg.timeframe, 50, ctx.mt5Login);
+  const price = await getCurrentPrice(cfg.symbol, ctx.mt5Login);
+  if (!candles.length || !price) return;
+
+  const lastSwingTime =
+    ctx.inMemoryLastSwingCandleTime ?? cfg.lastSwingCandleTime ?? null;
+  const closedCandle = pickNewClosedCandle(candles, lastSwingTime);
+  if (!closedCandle) return;
+
+  ctx.inMemoryLastSwingCandleTime = closedCandle.time;
+  try {
+    await db.botConfig.update({
+      where: { sessionId: ctx.internalId },
+      data: { lastSwingCandleTime: closedCandle.time },
+    });
+  } catch {
+    /* ignore */
+  }
+
+  // Spread filter (same per-symbol floor as single/multi).
+  const sym = cfg.symbol.toUpperCase();
+  const isJpyCross = sym.includes("JPY");
+  const isExotic = sym === "EURAUD" || sym === "AUDJPY" || sym === "GBPJPY" || sym === "EURJPY";
+  const spreadFloor = isExotic ? 10.0 : isJpyCross ? 6.0 : 3.0;
+  const effectiveMaxSpread = Math.max(cfg.maxSpreadPips ?? 3.0, spreadFloor);
+
+  const pipValue = detectPipValue(price.ask);
+  const spreadPips = (price.ask - price.bid) / pipValue;
+  if (spreadPips > effectiveMaxSpread) {
+    console.log(
+      `[bot:${ctx.sessionToken}] swing skip: spread ${spreadPips.toFixed(2)}p > max ${effectiveMaxSpread.toFixed(1)}p — ${cfg.symbol}`
+    );
+    return;
+  }
+
+  // === Fetch the higher-timeframe (M5) candles for S/R detection ===
+  const srTimeframe = cfg.swingSrTimeframe ?? "M5";
+  const srLookback = cfg.swingSrLookback ?? 50;
+  const srCandles: Candle[] = await getCandles(cfg.symbol, srTimeframe, srLookback, ctx.mt5Login);
+  if (srCandles.length < 20) {
+    console.log(
+      `[bot:${ctx.sessionToken}] swing skip: not enough ${srTimeframe} candles for S/R detection (${srCandles.length})`
+    );
+    return;
+  }
+
+  const { supports, resistances } = detectSupportResistance(srCandles, {
+    pipValue,
+    pivotWindow: 3,
+    tolerancePips: 5,
+    maxLevels: 5,
+  });
+  if (supports.length === 0 || resistances.length === 0) {
+    console.log(
+      `[bot:${ctx.sessionToken}] swing skip: no S/R levels detected on ${srTimeframe} for ${cfg.symbol}`
+    );
+    return;
+  }
+
+  // === Trend detection on trading timeframe ===
+  const closes = candles.map((c) => c.close);
+  const emaFast = computeEMA(closes, cfg.emaFast);
+  const emaSlow = computeEMA(closes, cfg.emaSlow);
+  if (emaFast == null || emaSlow == null) {
+    console.log(`[bot:${ctx.sessionToken}] swing skip: EMA computation failed`);
+    return;
+  }
+  const trendDir: "BUY" | "SELL" = emaFast > emaSlow ? "BUY" : "SELL";
+
+  // Direction selection (respect user's BUY/SELL/AUTO choice).
+  let direction: "BUY" | "SELL";
+  if (cfg.tradeDirection === "BUY") direction = "BUY";
+  else if (cfg.tradeDirection === "SELL") direction = "SELL";
+  else direction = trendDir;
+
+  const entry = direction === "BUY" ? price.ask : price.bid;
+
+  // Compute SL/TP from S/R levels with min/max guards.
+  const slTp = computeSwingSLTP(entry, direction, supports, resistances, {
+    pipValue,
+    swingMinSlPips: cfg.swingMinSlPips ?? 10.0,
+    swingMinTpPips: cfg.swingMinTpPips ?? 20.0,
+    swingMinRrRatio: cfg.swingMinRrRatio ?? 2.0,
+    swingMaxSlPips: cfg.swingMaxSlPips ?? 80.0,
+  });
+  if (!slTp) {
+    console.log(
+      `[bot:${ctx.sessionToken}] swing skip: no valid S/R-based SL/TP for ${direction} ${cfg.symbol} ` +
+      `@ ${entry.toFixed(4)} (entry too close to S/R or R:R too low)`
+    );
+    return;
+  }
+
+  const { slPrice, tpPrice, slPips, tpPips, rrRatio } = slTp;
+
+  const tradeId = `swing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  ctx.currentPyramidId = tradeId;
+  ctx.pyramidDirection = direction;
+  ctx.pyramidAnchorSl = null; // no shared SL — swing uses per-trade SL
+  ctx.pyramidOpenedAt = new Date().toISOString();
+
+  console.log(
+    `[bot:${ctx.sessionToken}] SWING OPEN ${direction} ${cfg.symbol} @ ${entry.toFixed(4)} ` +
+    `SL=${slPrice.toFixed(4)} (${slPips.toFixed(1)}p) TP=${tpPrice.toFixed(4)} (${tpPips.toFixed(1)}p) ` +
+    `R:R=1:${rrRatio.toFixed(2)} trend=${trendDir} (${srTimeframe} S/R)`
+  );
+
+  await notifyTrade("OPEN", ctx, {
+    direction,
+    symbol: cfg.symbol,
+    lotSize: cfg.lotSize,
+    openPrice: entry,
+    reason: `Swing ${direction} — trend=${trendDir}, SL=${slPips.toFixed(1)}p TP=${tpPips.toFixed(1)}p R:R=1:${rrRatio.toFixed(2)} (${srTimeframe} S/R)`,
+  });
+
+  await executeEntry(ctx, cfg, {
+    direction,
+    symbol: cfg.symbol,
+    entry,
+    slPrice,
+    tpPrice,
+    isAnchor: true,
+    pyramidId: tradeId,
+    reason: `Swing ${direction} — trend=${trendDir}, SL=${slPips.toFixed(1)}p TP=${tpPips.toFixed(1)}p R:R=1:${rrRatio.toFixed(2)}`,
   });
 }
 
